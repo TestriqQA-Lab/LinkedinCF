@@ -6,27 +6,39 @@ import { checkSiteGate } from "@/lib/site-gate";
 // Set SITE_PASSWORD env var to enable. Remove it to disable.
 // API routes, cron jobs, webhooks, and static assets bypass the gate.
 
+// Routes that NEVER need the auth middleware (public pages, APIs with own auth)
+function isPublicRoute(pathname: string): boolean {
+  // Public pages
+  const publicPaths = ["/", "/login", "/subscribe", "/onboarding", "/site-gate"];
+  if (publicPaths.some((p) => pathname === p || pathname.startsWith(p + "/"))) {
+    return true;
+  }
+
+  // Static/legal pages
+  if (["/privacy", "/terms", "/cookies", "/disclaimer", "/refund"].includes(pathname)) {
+    return true;
+  }
+
+  // API routes that have their own auth or are public
+  if (
+    pathname.startsWith("/api/auth") ||
+    pathname.startsWith("/api/webhooks") ||
+    pathname.startsWith("/api/subscription") ||
+    pathname.startsWith("/api/profile") ||
+    pathname.startsWith("/api/cron") ||
+    pathname.startsWith("/api/site-gate") ||
+    pathname.startsWith("/api/onboarding")
+  ) {
+    return true;
+  }
+
+  return false;
+}
+
 const authMiddleware = withAuth(
   async function middleware(req) {
     const { pathname } = req.nextUrl;
     const token = req.nextauth.token;
-
-    // Always allow public/auth routes
-    const publicPaths = ["/", "/login", "/subscribe", "/onboarding"];
-    if (publicPaths.some((p) => pathname === p || pathname.startsWith(p + "/"))) {
-      return NextResponse.next();
-    }
-
-    // Always allow API auth, webhook, subscription, and profile routes
-    if (
-      pathname.startsWith("/api/auth") ||
-      pathname.startsWith("/api/webhooks") ||
-      pathname.startsWith("/api/subscription") ||
-      pathname.startsWith("/api/profile") ||
-      pathname.startsWith("/api/cron")  // Vercel Cron jobs (protected by CRON_SECRET)
-    ) {
-      return NextResponse.next();
-    }
 
     // Admin routes: require admin role
     if (pathname.startsWith("/admin") || pathname.startsWith("/api/admin")) {
@@ -56,20 +68,26 @@ const authMiddleware = withAuth(
   }
 );
 
-// ── Main middleware: gate check → auth check ─────────────────────────────────
+// ── Main middleware: gate check → auth check (only for protected routes) ──────
 export default function middleware(req: NextRequest) {
-  // Check site-wide password gate first
+  const { pathname } = req.nextUrl;
+
+  // 1. Check site-wide password gate first (all routes except /site-gate itself)
   const gateResponse = checkSiteGate(req);
   if (gateResponse) return gateResponse;
 
-  // Then run the auth middleware
+  // 2. Public routes: skip auth middleware entirely
+  if (isPublicRoute(pathname)) {
+    return NextResponse.next();
+  }
+
+  // 3. Protected routes: run auth middleware
   return (authMiddleware as any)(req);
 }
 
 export const config = {
   matcher: [
-    // Site gate catches everything via checkSiteGate's own path filtering
+    // Match all routes except static files
     "/((?!_next/static|_next/image|favicon.ico).*)",
   ],
 };
-
