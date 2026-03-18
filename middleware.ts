@@ -8,6 +8,11 @@ import { checkSiteGate } from "@/lib/site-gate";
 
 // Routes that NEVER need the auth middleware (public pages, APIs with own auth)
 function isPublicRoute(pathname: string): boolean {
+  // Static assets from /public (images, fonts, etc.)
+  if (/\.(png|jpg|jpeg|gif|svg|ico|webp|woff|woff2|ttf|eot|css|js|map)$/i.test(pathname)) {
+    return true;
+  }
+
   // Public pages
   const publicPaths = ["/", "/login", "/subscribe", "/onboarding", "/site-gate"];
   if (publicPaths.some((p) => pathname === p || pathname.startsWith(p + "/"))) {
