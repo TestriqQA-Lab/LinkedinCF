@@ -173,13 +173,16 @@ export default function LandingPage() {
         <div className="flex items-center gap-2">
           <img src="/logo.png" alt="Kruti.io — AI LinkedIn Content Platform" className="h-9 w-auto" />
         </div>
-        <button
-          onClick={() => signIn("linkedin", { callbackUrl: "/dashboard" })}
-          className="flex items-center gap-2 bg-linkedin-blue text-white px-4 py-2 rounded-lg text-sm font-medium hover:bg-linkedin-darkblue transition-colors"
-        >
-          <Linkedin className="w-4 h-4" />
-          Sign in with LinkedIn
-        </button>
+        <div className="flex items-center gap-4">
+          <a href="/blog" className="text-sm font-medium text-gray-600 dark:text-gray-300 hover:text-[#0A66C2] transition-colors">Blog</a>
+          <button
+            onClick={() => signIn("linkedin", { callbackUrl: "/dashboard" })}
+            className="flex items-center gap-2 bg-linkedin-blue text-white px-4 py-2 rounded-lg text-sm font-medium hover:bg-linkedin-darkblue transition-colors"
+          >
+            <Linkedin className="w-4 h-4" />
+            Sign in with LinkedIn
+          </button>
+        </div>
       </nav>
 
       {/* Hero */}

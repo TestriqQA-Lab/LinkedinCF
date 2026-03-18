@@ -4,10 +4,9 @@ import { authOptions } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
 
 const DEV_MODE =
-  process.env.NODE_ENV !== "production" &&
-  (!process.env.NEXT_PUBLIC_RAZORPAY_KEY_ID ||
-   !process.env.RAZORPAY_KEY_SECRET ||
-   process.env.NEXT_PUBLIC_RAZORPAY_KEY_ID === "rzp_test_REPLACE_ME");
+  !process.env.NEXT_PUBLIC_RAZORPAY_KEY_ID ||
+  !process.env.RAZORPAY_KEY_SECRET ||
+  process.env.NEXT_PUBLIC_RAZORPAY_KEY_ID === "rzp_test_REPLACE_ME";
 
 export async function POST(req: NextRequest) {
   const session = await getServerSession(authOptions);
