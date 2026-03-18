@@ -19,7 +19,8 @@ export default withAuth(
       pathname.startsWith("/api/auth") ||
       pathname.startsWith("/api/webhooks") ||
       pathname.startsWith("/api/subscription") ||
-      pathname.startsWith("/api/profile")
+      pathname.startsWith("/api/profile") ||
+      pathname.startsWith("/api/cron")  // Vercel Cron jobs (protected by CRON_SECRET)
     ) {
       return NextResponse.next();
     }

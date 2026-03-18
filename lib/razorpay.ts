@@ -1,10 +1,22 @@
 import Razorpay from "razorpay";
 import crypto from "crypto";
 
-// ── SDK Instance ────────────────────────────────────────────────────────────────
-export const razorpay = new Razorpay({
-  key_id: process.env.NEXT_PUBLIC_RAZORPAY_KEY_ID!,
-  key_secret: process.env.RAZORPAY_KEY_SECRET!,
+// ── SDK Instance (lazy to avoid crash at build time) ───────────────────────────
+let _razorpay: InstanceType<typeof Razorpay> | null = null;
+export function getRazorpay(): InstanceType<typeof Razorpay> {
+  if (!_razorpay) {
+    _razorpay = new Razorpay({
+      key_id: process.env.NEXT_PUBLIC_RAZORPAY_KEY_ID!,
+      key_secret: process.env.RAZORPAY_KEY_SECRET!,
+    });
+  }
+  return _razorpay;
+}
+// Keep `razorpay` as a getter for backward compatibility
+export const razorpay = new Proxy({} as InstanceType<typeof Razorpay>, {
+  get(_target, prop, receiver) {
+    return Reflect.get(getRazorpay(), prop, receiver);
+  },
 });
 
 // ── Constants ───────────────────────────────────────────────────────────────────

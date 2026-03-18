@@ -1,7 +1,8 @@
+// instrumentation.ts
+// On Vercel, cron jobs are handled by vercel.json → /api/cron/* routes.
+// This file is intentionally left as a no-op.
+
 export async function register() {
-  // Only run on Node.js runtime (not Edge)
-  if (process.env.NEXT_RUNTIME === "nodejs") {
-    const { startScheduler } = await import("./lib/scheduler");
-    startScheduler();
-  }
+  // No-op on Vercel — cron jobs run as separate HTTP invocations
 }
+

@@ -1,6 +1,5 @@
 import { GoogleGenAI } from "@google/genai";
-import * as fs from "fs";
-import * as path from "path";
+import { put } from "@vercel/blob";
 
 const ai = new GoogleGenAI({ apiKey: process.env.GOOGLE_AI_API_KEY! });
 
@@ -39,11 +38,12 @@ Square format (1:1). High quality, suitable for LinkedIn.`;
     if (imageBytes) {
       const buffer = Buffer.from(imageBytes, "base64");
       const filename = `post-${postId}-${Date.now()}.png`;
-      const filepath = path.join(process.cwd(), "public", "generated", filename);
-      fs.mkdirSync(path.dirname(filepath), { recursive: true });
-      fs.writeFileSync(filepath, buffer);
-      console.log("[Imagen] Generated via Imagen 4.0 Fast:", filename);
-      return `/generated/${filename}`;
+      const blob = await put(`generated/${filename}`, buffer, {
+        access: "public",
+        contentType: "image/png",
+      });
+      console.log("[Imagen] Generated via Imagen 4.0 Fast:", blob.url);
+      return blob.url;
     }
     console.warn("[Imagen] Imagen 4.0 Fast returned no image bytes, trying fallback");
   } catch (err) {
@@ -65,11 +65,12 @@ Square format (1:1). High quality, suitable for LinkedIn.`;
     if (imageBytes) {
       const buffer = Buffer.from(imageBytes, "base64");
       const filename = `post-${postId}-${Date.now()}.png`;
-      const filepath = path.join(process.cwd(), "public", "generated", filename);
-      fs.mkdirSync(path.dirname(filepath), { recursive: true });
-      fs.writeFileSync(filepath, buffer);
-      console.log("[Imagen] Generated via Imagen 3.0:", filename);
-      return `/generated/${filename}`;
+      const blob = await put(`generated/${filename}`, buffer, {
+        access: "public",
+        contentType: "image/png",
+      });
+      console.log("[Imagen] Generated via Imagen 3.0:", blob.url);
+      return blob.url;
     }
     console.warn("[Imagen] Imagen 3.0 returned no image bytes");
   } catch (err) {
@@ -89,12 +90,14 @@ Square format (1:1). High quality, suitable for LinkedIn.`;
       if (part.inlineData?.mimeType?.startsWith("image/") && part.inlineData.data) {
         const buffer = Buffer.from(part.inlineData.data, "base64");
         const ext = part.inlineData.mimeType === "image/jpeg" ? "jpg" : "png";
+        const contentType = part.inlineData.mimeType === "image/jpeg" ? "image/jpeg" : "image/png";
         const filename = `post-${postId}-${Date.now()}.${ext}`;
-        const filepath = path.join(process.cwd(), "public", "generated", filename);
-        fs.mkdirSync(path.dirname(filepath), { recursive: true });
-        fs.writeFileSync(filepath, buffer);
-        console.log("[Imagen] Generated via Gemini Flash Image Gen:", filename);
-        return `/generated/${filename}`;
+        const blob = await put(`generated/${filename}`, buffer, {
+          access: "public",
+          contentType,
+        });
+        console.log("[Imagen] Generated via Gemini Flash Image Gen:", blob.url);
+        return blob.url;
       }
     }
     console.warn("[Imagen] Gemini Flash Image Gen returned no image data");

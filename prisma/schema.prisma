@@ -3,8 +3,9 @@ generator client {
 }
 
 datasource db {
-  provider = "sqlite"
-  url      = env("DATABASE_URL")
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
+  directUrl = env("DIRECT_URL") // Non-pooled connection for migrations
 }
 
 model Account {
@@ -13,12 +14,12 @@ model Account {
   type              String
   provider          String
   providerAccountId String
-  refresh_token     String?
-  access_token      String?
+  refresh_token     String? @db.Text
+  access_token      String? @db.Text
   expires_at        Int?
   token_type        String?
   scope             String?
-  id_token          String?
+  id_token          String? @db.Text
   session_state     String?
   user              User    @relation(fields: [userId], references: [id], onDelete: Cascade)
 
@@ -50,20 +51,20 @@ model User {
   role                String        @default("user")  // "user" | "admin"
   image               String?
   headline            String?
-  summary             String?
-  skills              String?       // JSON array string
+  summary             String?       @db.Text
+  skills              String?       @db.Text // JSON array string
   industry            String?
   profileUrl          String?
-  tonePrefs           String?       // JSON: formal/casual/inspirational
+  tonePrefs           String?       @db.Text // JSON: formal/casual/inspirational
   // Onboarding & content preferences
   onboardingCompleted Boolean       @default(false)
-  contentGoals        String?       // JSON: ["Lead Generation", "Brand Awareness"]
+  contentGoals        String?       @db.Text // JSON: ["Lead Generation", "Brand Awareness"]
   positioning         String?       // "Thought Leader" | "Industry Expert" | etc.
-  contentStyles       String?       // JSON: ["Narrative", "How-to", ...]
-  targetAudience      String?       // free text description
+  contentStyles       String?       @db.Text // JSON: ["Narrative", "How-to", ...]
+  targetAudience      String?       @db.Text // free text description
   humanMode           Boolean       @default(false)
-  postingSchedule     String?       // JSON: { days: ["Monday","Wednesday"], time: "09:00" }
-  postSignature       String?       // Text always appended to every LinkedIn post
+  postingSchedule     String?       @db.Text // JSON: { days: ["Monday","Wednesday"], time: "09:00" }
+  postSignature       String?       @db.Text // Text always appended to every LinkedIn post
   timezone            String        @default("Asia/Kolkata") // IANA timezone string
   accounts            Account[]
   sessions            Session[]
@@ -97,7 +98,7 @@ model ContentPlan {
   userId    String
   user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
   weekStart DateTime // Monday of the week this plan covers
-  strategy  String   // JSON: pillars, theme, audience, tone, postMix
+  strategy  String   @db.Text // JSON: pillars, theme, audience, tone, postMix
   posts     Post[]
   createdAt DateTime @default(now())
 
@@ -108,12 +109,12 @@ model Post {
   id                String      @id @default(cuid())
   planId            String
   plan              ContentPlan @relation(fields: [planId], references: [id], onDelete: Cascade)
-  title             String
-  body              String
+  title             String      @db.Text
+  body              String      @db.Text
   imageUrl          String?
-  imagePrompt       String?
+  imagePrompt       String?     @db.Text
   imageGenCount     Int         @default(0) // number of times image was generated for this post
-  hashtags          String?     // JSON array string
+  hashtags          String?     @db.Text // JSON array string
   postType          String      // thought-leadership | tips | story | poll | carousel
   scheduledAt       DateTime?
   status            String      @default("draft") // draft | ready | published
@@ -121,7 +122,7 @@ model Post {
   humanModeOverride Boolean?    // null = use user default, true = on, false = off
   postedToLinkedIn  Boolean     @default(false)
   linkedinPostId    String?     // UGC post ID from LinkedIn API
-  postError         String?     // last error if auto-post failed
+  postError         String?     @db.Text // last error if auto-post failed
   createdAt         DateTime    @default(now())
   updatedAt         DateTime    @updatedAt
 
@@ -143,8 +144,8 @@ model Newsletter {
   user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
   title       String
   subject     String
-  body        String   // JSON: sections array
-  pillars     String?  // JSON: source pillars used
+  body        String   @db.Text // JSON: sections array
+  pillars     String?  @db.Text // JSON: source pillars used
   scheduledAt DateTime?
   status      String   @default("draft")
   createdAt   DateTime @default(now())

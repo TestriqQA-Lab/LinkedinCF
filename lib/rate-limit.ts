@@ -13,13 +13,15 @@ interface RateLimitEntry {
 const store = new Map<string, RateLimitEntry>();
 
 // Clean up stale entries every 5 minutes
-setInterval(() => {
-  const now = Date.now();
-  for (const [key, entry] of store.entries()) {
-    entry.timestamps = entry.timestamps.filter((t) => now - t < 3600_000);
-    if (entry.timestamps.length === 0) store.delete(key);
-  }
-}, 5 * 60 * 1000);
+if (typeof setInterval !== "undefined") {
+  setInterval(() => {
+    const now = Date.now();
+    store.forEach((entry, key) => {
+      entry.timestamps = entry.timestamps.filter((t) => now - t < 3600_000);
+      if (entry.timestamps.length === 0) store.delete(key);
+    });
+  }, 5 * 60 * 1000);
+}
 
 interface RateLimitConfig {
   /** Maximum number of requests allowed within the window */

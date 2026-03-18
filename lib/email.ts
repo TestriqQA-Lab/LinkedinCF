@@ -1,6 +1,12 @@
 import { Resend } from "resend";
 
-const resend = new Resend(process.env.RESEND_API_KEY);
+let _resend: Resend | null = null;
+function getResend(): Resend {
+  if (!_resend) {
+    _resend = new Resend(process.env.RESEND_API_KEY);
+  }
+  return _resend;
+}
 
 /** Escape HTML special characters to prevent injection in email templates */
 function escapeHtml(str: string): string {
@@ -185,7 +191,7 @@ export async function sendTrialReminderEmail({
         : `Your Kruti.io trial ends in ${daysRemaining} days`;
 
   try {
-    const { error } = await resend.emails.send({
+    const { error } = await getResend().emails.send({
       from,
       to,
       subject,
@@ -220,7 +226,7 @@ export async function sendNewsletterEmail({
   const from = process.env.FROM_EMAIL || "onboarding@resend.dev";
 
   try {
-    const { error } = await resend.emails.send({
+    const { error } = await getResend().emails.send({
       from,
       to,
       subject: content.subject,

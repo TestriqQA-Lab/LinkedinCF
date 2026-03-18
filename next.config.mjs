@@ -7,6 +7,7 @@ const nextConfig = {
     remotePatterns: [
       { protocol: "https", hostname: "media.licdn.com" },
       { protocol: "https", hostname: "**.linkedin.com" },
+      { protocol: "https", hostname: "**.public.blob.vercel-storage.com" },
     ],
   },
   async headers() {
@@ -32,7 +33,7 @@ const nextConfig = {
               "default-src 'self'",
               "script-src 'self' 'unsafe-inline' 'unsafe-eval' https://checkout.razorpay.com",
               "style-src 'self' 'unsafe-inline'",
-              "img-src 'self' data: blob: https://media.licdn.com https://*.linkedin.com",
+              "img-src 'self' data: blob: https://media.licdn.com https://*.linkedin.com https://*.public.blob.vercel-storage.com",
               "font-src 'self'",
               "connect-src 'self' https://api.razorpay.com https://lux.razorpay.com",
               "frame-src https://api.razorpay.com https://checkout.razorpay.com",

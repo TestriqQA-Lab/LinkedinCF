@@ -1,11 +1,18 @@
 import { NextRequest, NextResponse } from "next/server";
 import crypto from "crypto";
-import { startScheduler } from "@/lib/scheduler";
+import {
+  runAutoPost,
+  runNewsletterSend,
+  runTrialReminders,
+  runImageCleanup,
+  runTokenRefresh,
+} from "@/lib/scheduler";
 
 /**
- * Protected scheduler trigger endpoint.
+ * Manual trigger endpoint for all scheduler jobs.
+ * On Vercel, individual jobs run via /api/cron/* routes.
+ * This endpoint is kept as a fallback / manual "run all" trigger.
  * Must be called with Authorization: Bearer CRON_SECRET header.
- * Use this from a cron service (e.g., Vercel Cron, Railway Cron, external).
  */
 export async function GET(req: NextRequest) {
   const authHeader = req.headers.get("authorization");
@@ -23,6 +30,14 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
-  startScheduler();
-  return NextResponse.json({ ok: true, message: "Scheduler running" });
+  const results = {
+    autoPost: await runAutoPost(),
+    newsletter: await runNewsletterSend(),
+    trialReminders: await runTrialReminders(),
+    imageCleanup: await runImageCleanup(),
+    tokenRefresh: await runTokenRefresh(),
+  };
+
+  return NextResponse.json({ ok: true, results });
 }
+

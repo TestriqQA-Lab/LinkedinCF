@@ -1,20 +1,5 @@
 import { prisma } from "@/lib/prisma";
 import { getValidAccessToken } from "@/lib/linkedin-token";
-import * as fs from "fs";
-import * as path from "path";
-
-/** Validate image path to prevent path traversal attacks */
-function isValidImagePath(imageUrl: string): boolean {
-  // Only allow filenames matching our generation pattern
-  const basename = path.basename(imageUrl);
-  if (basename !== imageUrl.replace(/^\/generated\//, "")) return false;
-  // Must match: post-{id}-{timestamp}.(png|jpg|jpeg)
-  if (!/^post-[a-zA-Z0-9_-]+-\d+\.(png|jpg|jpeg)$/.test(basename)) return false;
-  // Verify resolved path stays within public/generated/
-  const resolved = path.resolve(process.cwd(), "public", "generated", basename);
-  const generatedDir = path.resolve(process.cwd(), "public", "generated");
-  return resolved.startsWith(generatedDir + path.sep);
-}
 
 export interface LinkedInPostResult {
   success: boolean;
@@ -104,8 +89,8 @@ export async function postToLinkedIn(
     },
   };
 
-  // If image exists locally, upload to LinkedIn first (with path traversal protection)
-  if (post.imageUrl && post.imageUrl.startsWith("/generated/") && isValidImagePath(post.imageUrl)) {
+  // If image exists (Blob URL or any HTTPS URL), upload to LinkedIn first
+  if (post.imageUrl && post.imageUrl.startsWith("https://")) {
     try {
       const assetUrn = await uploadImageToLinkedIn(
         accessToken,
@@ -169,7 +154,7 @@ export async function postToLinkedIn(
 async function uploadImageToLinkedIn(
   accessToken: string,
   linkedinId: string,
-  localImageUrl: string
+  imageUrl: string
 ): Promise<string | null> {
   // Step 1: Register upload with LinkedIn
   const registerRes = await fetch(
@@ -213,22 +198,15 @@ async function uploadImageToLinkedIn(
     return null;
   }
 
-  // Step 2: Read local image and upload binary (safe path construction)
-  const safeBasename = path.basename(localImageUrl);
-  const filePath = path.join(process.cwd(), "public", "generated", safeBasename);
-  const generatedDir = path.resolve(process.cwd(), "public", "generated");
-  if (!path.resolve(filePath).startsWith(generatedDir + path.sep)) {
-    console.error("Path traversal attempt blocked:", localImageUrl);
+  // Step 2: Fetch image from Blob URL and upload binary to LinkedIn
+  const imageRes = await fetch(imageUrl);
+  if (!imageRes.ok) {
+    console.error("Failed to fetch image from Blob URL:", imageUrl);
     return null;
   }
-  if (!fs.existsSync(filePath)) {
-    console.error("Local image file not found:", filePath);
-    return null;
-  }
-  const imageBuffer = fs.readFileSync(filePath);
-  const contentType = localImageUrl.endsWith(".jpg") || localImageUrl.endsWith(".jpeg")
-    ? "image/jpeg"
-    : "image/png";
+
+  const imageBuffer = await imageRes.arrayBuffer();
+  const contentType = imageRes.headers.get("content-type") || "image/png";
 
   const uploadRes = await fetch(uploadUrl, {
     method: "PUT",
@@ -236,7 +214,7 @@ async function uploadImageToLinkedIn(
       Authorization: `Bearer ${accessToken}`,
       "Content-Type": contentType,
     },
-    body: imageBuffer as unknown as BodyInit,
+    body: imageBuffer,
   });
 
   if (!uploadRes.ok) {

@@ -2,8 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { getServerSession } from "next-auth";
 import { authOptions } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
-import { writeFile } from "fs/promises";
-import path from "path";
+import { put } from "@vercel/blob";
 
 export async function POST(req: NextRequest) {
   const session = await getServerSession(authOptions);
@@ -49,25 +48,21 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    // Generate unique filename
+    // Generate unique filename and upload to Vercel Blob
     const ext = file.name.split(".").pop() || "png";
     const filename = `upload-${postId}-${Date.now()}.${ext}`;
-    const uploadDir = path.join(process.cwd(), "public", "uploads");
-    const filePath = path.join(uploadDir, filename);
-
-    // Write file to disk
-    const bytes = await file.arrayBuffer();
-    await writeFile(filePath, Buffer.from(bytes));
-
-    const imageUrl = `/uploads/${filename}`;
+    const blob = await put(`uploads/${filename}`, file, {
+      access: "public",
+      contentType: file.type,
+    });
 
     // Update the post with the new image URL
     await prisma.post.update({
       where: { id: postId },
-      data: { imageUrl },
+      data: { imageUrl: blob.url },
     });
 
-    return NextResponse.json({ imageUrl });
+    return NextResponse.json({ imageUrl: blob.url });
   } catch (err) {
     console.error("Image upload error:", err);
     return NextResponse.json({ error: "Upload failed" }, { status: 500 });
