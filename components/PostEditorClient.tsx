@@ -1,0 +1,1175 @@
+"use client";
+
+import { useState, useRef, useCallback, useEffect } from "react";
+import { useRouter } from "next/navigation";
+import {
+  ArrowLeft,
+  Sparkles,
+  Image as ImageIcon,
+  Copy,
+  CheckCircle,
+  Loader2,
+  Save,
+  Hash,
+  Clock,
+  AlertCircle,
+  ExternalLink,
+  Upload,
+  X,
+  ZoomIn,
+  Trash2,
+  Wand2,
+  Repeat2,
+} from "lucide-react";
+import { cn, getPostTypeColor } from "@/lib/utils";
+import Image from "next/image";
+import { useToast } from "@/components/Toast";
+import VariantModal, { Variant } from "@/components/VariantModal";
+import RepurposeModal, { RepurposeResult } from "@/components/RepurposeModal";
+import LinkedInPostPreview from "@/components/LinkedInPostPreview";
+import { useAutoSave } from "@/hooks/useAutoSave";
+import { useSession } from "next-auth/react";
+import { formatInTimeZone } from "date-fns-tz";
+import { fromZonedTime } from "date-fns-tz";
+
+interface Post {
+  id: string;
+  title: string;
+  body: string;
+  hashtags: string | null;
+  postType: string;
+  status: string;
+  scheduledAt: Date | string | null;
+  imageUrl: string | null;
+  imagePrompt: string | null;
+  imageGenCount: number;
+  weekNumber: number;
+  humanModeOverride: boolean | null;
+  postedToLinkedIn: boolean;
+  linkedinPostId: string | null;
+  postError: string | null;
+  plan: { strategy: string };
+}
+
+interface UserProfile {
+  name: string | null;
+  image: string | null;
+  headline: string | null;
+}
+
+export default function PostEditorClient({
+  post,
+  postSignature,
+  userProfile,
+  userTimezone = "Asia/Kolkata",
+}: {
+  post: Post;
+  postSignature: string | null;
+  userProfile: UserProfile;
+  userTimezone?: string;
+}) {
+  const router = useRouter();
+  const { toast } = useToast();
+  const { data: sessionData } = useSession();
+  const isTrialExpired = sessionData?.user?.subscriptionStatus === "trialing" &&
+    sessionData?.user?.trialEnd != null && new Date(sessionData.user.trialEnd) < new Date();
+  const [title, setTitle] = useState(post.title);
+  const [body, setBody] = useState(post.body);
+  const [status, setStatus] = useState(post.status);
+  const [imageUrl, setImageUrl] = useState(post.imageUrl);
+  // null = use user default, true = on, false = off
+  const [humanMode, setHumanMode] = useState<boolean | null>(post.humanModeOverride ?? null);
+
+  // Schedule date/time state — display in user's configured timezone
+  const initDate = post.scheduledAt ? new Date(post.scheduledAt) : null;
+  const [scheduledDate, setScheduledDate] = useState(
+    initDate ? formatInTimeZone(initDate, userTimezone, "yyyy-MM-dd") : ""
+  );
+  const [scheduledTime, setScheduledTime] = useState(
+    initDate ? formatInTimeZone(initDate, userTimezone, "HH:mm") : "09:00"
+  );
+
+  const IMAGE_GEN_LIMIT: number = 2;
+  const [imageGenRemaining, setImageGenRemaining] = useState(
+    Math.max(0, IMAGE_GEN_LIMIT - (post.imageGenCount || 0))
+  );
+  const [saving, setSaving] = useState(false);
+  const [regenerating, setRegenerating] = useState(false);
+  const [generatingImage, setGeneratingImage] = useState(false);
+  const [posting, setPosting] = useState(false);
+  const [copied, setCopied] = useState(false);
+  const [saved, setSaved] = useState(false);
+  const [postResult, setPostResult] = useState<{ success: boolean; error?: string } | null>(null);
+  const [uploading, setUploading] = useState(false);
+  const [lightboxOpen, setLightboxOpen] = useState(false);
+  const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
+  const [deleting, setDeleting] = useState(false);
+  const [showPublishChecklist, setShowPublishChecklist] = useState(false);
+  const [hashtags, setHashtags] = useState<string[]>(
+    post.hashtags ? JSON.parse(post.hashtags) : []
+  );
+  // Version history — stores previous content before regeneration
+  const [previousVersion, setPreviousVersion] = useState<{ title: string; body: string; hashtags: string[] } | null>(null);
+
+  // Variant state
+  const [variants, setVariants] = useState<Variant[]>([]);
+  const [showVariants, setShowVariants] = useState(false);
+  const [generatingVariants, setGeneratingVariants] = useState(false);
+  // Repurpose state
+  const [repurposeResults, setRepurposeResults] = useState<RepurposeResult[]>([]);
+  const [showRepurpose, setShowRepurpose] = useState(false);
+  const [generatingRepurpose, setGeneratingRepurpose] = useState(false);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+
+  // Weekend detection
+  const isWeekend = (() => {
+    if (!scheduledDate) return false;
+    const d = new Date(scheduledDate + "T00:00:00");
+    return d.getDay() === 0 || d.getDay() === 6;
+  })();
+
+  const charCount = body.length;
+  const charLimit = 3000;
+
+  async function handleSave() {
+    cancelAutoSave(); // Prevent race with auto-save
+    setSaving(true);
+    try {
+      // Combine date + time, convert from user's timezone to UTC
+      let scheduledAt: string | null = null;
+      if (scheduledDate) {
+        const localDate = new Date(`${scheduledDate}T${scheduledTime || "09:00"}:00`);
+        scheduledAt = fromZonedTime(localDate, userTimezone).toISOString();
+      }
+
+      await fetch(`/api/content/${post.id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ title, body, hashtags, status, humanModeOverride: humanMode, scheduledAt }),
+      });
+      markSaved(); // Update auto-save's last-saved baseline
+      setSaved(true);
+      toast("Post saved successfully", "success");
+      setTimeout(() => setSaved(false), 2000);
+      router.refresh();
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function handleRegenerate() {
+    // Save current version for undo
+    setPreviousVersion({ title, body, hashtags: [...hashtags] });
+    setRegenerating(true);
+    try {
+      const res = await fetch("/api/generate/post", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ postId: post.id }),
+      });
+      const updated = await res.json();
+      if (updated.title) setTitle(updated.title);
+      if (updated.body) setBody(updated.body);
+      toast("Post regenerated — click Undo to restore previous version", "success");
+      router.refresh();
+    } finally {
+      setRegenerating(false);
+    }
+  }
+
+  function handleUndoRegenerate() {
+    if (!previousVersion) return;
+    setTitle(previousVersion.title);
+    setBody(previousVersion.body);
+    setHashtags(previousVersion.hashtags);
+    setPreviousVersion(null);
+    toast("Previous version restored — save to keep changes", "info");
+  }
+
+  async function handleGenerateImage() {
+    setGeneratingImage(true);
+    try {
+      const res = await fetch("/api/generate/image", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ postId: post.id }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        toast(data.error || "Failed to generate image", "error");
+        if (data.remaining !== undefined) setImageGenRemaining(data.remaining);
+        return;
+      }
+      if (data.imageUrl) {
+        setImageUrl(data.imageUrl);
+        const remaining = data.remaining ?? 0;
+        setImageGenRemaining(remaining);
+        toast(
+          remaining > 0
+            ? `Image generated (${remaining} generation${remaining === 1 ? "" : "s"} remaining)`
+            : "Image generated (no more generations left for this post)",
+          "success"
+        );
+      }
+    } finally {
+      setGeneratingImage(false);
+    }
+  }
+
+  function handleCopy() {
+    let fullText = `${body}\n\n${hashtags.map((h) => `#${h}`).join(" ")}`;
+    if (postSignature) {
+      fullText += `\n\n${postSignature}`;
+    }
+    navigator.clipboard.writeText(fullText);
+    setCopied(true);
+    toast("Copied to clipboard", "success");
+    setTimeout(() => setCopied(false), 2000);
+  }
+
+  function getPublishChecklist() {
+    return [
+      { label: "Post body has content", passed: body.trim().length > 20 },
+      { label: "Image attached", passed: !!imageUrl, optional: true },
+      { label: "Hashtags added", passed: hashtags.length > 0, optional: true },
+      { label: "Schedule date set", passed: !!scheduledDate, optional: true },
+    ];
+  }
+
+  function handlePublishClick() {
+    setShowPublishChecklist(true);
+  }
+
+  async function handlePostToLinkedIn() {
+    setShowPublishChecklist(false);
+    // Save first, then post
+    await handleSave();
+    setPosting(true);
+    setPostResult(null);
+    try {
+      const res = await fetch("/api/post-to-linkedin", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ postId: post.id }),
+      });
+      const data = await res.json();
+      if (data.success) {
+        setPostResult({ success: true });
+        setStatus("published");
+        toast("Successfully posted to LinkedIn!", "success");
+        router.refresh();
+      } else {
+        setPostResult({ success: false, error: data.error });
+        toast(`Failed to post: ${data.error}`, "error");
+      }
+    } finally {
+      setPosting(false);
+    }
+  }
+
+  function cycleHumanMode() {
+    setHumanMode((v) => {
+      if (v === null) return true;
+      if (v === true) return false;
+      return null;
+    });
+  }
+
+  async function handleImageUpload(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    setUploading(true);
+    try {
+      const formData = new FormData();
+      formData.append("image", file);
+      formData.append("postId", post.id);
+
+      const res = await fetch("/api/upload/image", {
+        method: "POST",
+        body: formData,
+      });
+      const data = await res.json();
+      if (res.ok && data.imageUrl) {
+        setImageUrl(data.imageUrl);
+        toast("Image uploaded", "success");
+        router.refresh();
+      } else {
+        toast(data.error || "Upload failed", "error");
+      }
+    } catch {
+      toast("Upload failed. Please try again.", "error");
+    } finally {
+      setUploading(false);
+      // Reset input so same file can be re-selected
+      if (fileInputRef.current) fileInputRef.current.value = "";
+    }
+  }
+
+  async function handleRemoveImage() {
+    try {
+      await fetch(`/api/content/${post.id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ imageUrl: null }),
+      });
+      setImageUrl(null);
+      toast("Image removed", "info");
+      router.refresh();
+    } catch {
+      toast("Failed to remove image", "error");
+    }
+  }
+
+  async function handleDelete() {
+    setDeleting(true);
+    try {
+      const res = await fetch("/api/content/bulk", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "delete", postIds: [post.id] }),
+      });
+      if (res.ok) {
+        toast("Post deleted", "info");
+        router.push("/posts");
+      } else {
+        const data = await res.json();
+        toast(data.error || "Failed to delete post", "error");
+      }
+    } catch {
+      toast("Failed to delete post", "error");
+    } finally {
+      setDeleting(false);
+      setShowDeleteConfirm(false);
+    }
+  }
+
+  async function handleGenerateVariants() {
+    setGeneratingVariants(true);
+    setShowVariants(true);
+    setVariants([]);
+    try {
+      const res = await fetch("/api/generate/variants", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ postId: post.id }),
+      });
+      const data = await res.json();
+      if (data.variants) {
+        setVariants(data.variants);
+      } else {
+        toast("Failed to generate variants", "error");
+        setShowVariants(false);
+      }
+    } catch {
+      toast("Failed to generate variants", "error");
+      setShowVariants(false);
+    } finally {
+      setGeneratingVariants(false);
+    }
+  }
+
+  function handleVariantSelect(variant: Variant) {
+    setTitle(variant.title);
+    setBody(variant.body);
+    setHashtags(variant.hashtags);
+    setShowVariants(false);
+    toast("Variant applied — review and save", "success");
+  }
+
+  async function handleRepurpose() {
+    setGeneratingRepurpose(true);
+    setShowRepurpose(true);
+    setRepurposeResults([]);
+    try {
+      const res = await fetch("/api/generate/repurpose", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ postId: post.id }),
+      });
+      const data = await res.json();
+      if (data.results) {
+        setRepurposeResults(data.results);
+      } else {
+        toast("Failed to repurpose content", "error");
+        setShowRepurpose(false);
+      }
+    } catch {
+      toast("Failed to repurpose content", "error");
+      setShowRepurpose(false);
+    } finally {
+      setGeneratingRepurpose(false);
+    }
+  }
+
+  // Close lightbox on Escape key
+  useEffect(() => {
+    function handleKey(e: KeyboardEvent) {
+      if (e.key === "Escape") setLightboxOpen(false);
+    }
+    if (lightboxOpen) {
+      document.addEventListener("keydown", handleKey);
+      return () => document.removeEventListener("keydown", handleKey);
+    }
+  }, [lightboxOpen]);
+
+  const isPublished = post.postedToLinkedIn;
+
+  // Auto-save hook — only for unpublished posts
+  const { status: autoSaveStatus, cancelAutoSave, markSaved } = useAutoSave({
+    postId: post.id,
+    title,
+    body,
+    isPublished,
+  });
+
+  const humanModeLabel =
+    humanMode === null ? "Default" : humanMode ? "On" : "Off";
+  const humanModeBg =
+    humanMode === true ? "bg-[#0A66C2]" : humanMode === false ? "bg-gray-200 dark:bg-gray-600" : "bg-amber-400";
+
+  return (
+    <div className="space-y-6 max-w-4xl">
+      {/* Published banner */}
+      {isPublished && (
+        <div className="flex items-center gap-3 bg-green-50 dark:bg-green-900/30 border border-green-200 dark:border-green-800 rounded-xl px-4 py-3">
+          <CheckCircle className="w-5 h-5 text-green-600 dark:text-green-400 flex-shrink-0" />
+          <p className="text-sm text-green-800 dark:text-green-300">
+            This post has been published to LinkedIn. Editing is disabled.
+          </p>
+        </div>
+      )}
+
+      {/* Back + Header Actions */}
+      <div className="space-y-3">
+        <div className="flex items-center gap-3">
+          <button
+            onClick={() => router.back()}
+            className="flex items-center gap-1.5 text-gray-500 dark:text-gray-400 hover:text-gray-800 dark:hover:text-gray-200 text-sm"
+          >
+            <ArrowLeft className="w-4 h-4" />
+            Back
+          </button>
+          <span className={cn("text-xs px-2 py-0.5 rounded-full border", getPostTypeColor(post.postType))}>
+            {post.postType}
+          </span>
+          {!isPublished && (
+            <div className="ml-auto flex items-center gap-1.5">
+              {autoSaveStatus === "saving" && (
+                <span className="text-xs text-gray-400 dark:text-gray-500 flex items-center gap-1">
+                  <Loader2 className="w-3 h-3 animate-spin" />
+                  Saving...
+                </span>
+              )}
+              {autoSaveStatus === "saved" && (
+                <span className="text-xs text-green-500 dark:text-green-400 flex items-center gap-1">
+                  <CheckCircle className="w-3 h-3" />
+                  Saved
+                </span>
+              )}
+              {autoSaveStatus === "error" && (
+                <span className="text-xs text-red-500 dark:text-red-400 flex items-center gap-1">
+                  <AlertCircle className="w-3 h-3" />
+                  Save failed
+                </span>
+              )}
+            </div>
+          )}
+        </div>
+
+        {/* Action buttons row */}
+        <div className="flex items-center gap-2 flex-wrap">
+          <button
+            onClick={handleCopy}
+            className="flex items-center gap-1.5 text-sm px-3 py-2 border border-gray-200 dark:border-gray-700 rounded-lg hover:bg-gray-50 dark:hover:bg-gray-800 transition-colors dark:text-gray-300"
+            title="Copy to clipboard"
+          >
+            {copied ? <CheckCircle className="w-4 h-4 text-green-500" /> : <Copy className="w-4 h-4 text-gray-500 dark:text-gray-400" />}
+            {copied ? "Copied!" : "Copy"}
+          </button>
+
+          <button
+            onClick={handleRepurpose}
+            disabled={generatingRepurpose}
+            className="flex items-center gap-1.5 text-sm px-3 py-2 border border-emerald-200 dark:border-emerald-800 text-emerald-700 dark:text-emerald-400 rounded-lg hover:bg-emerald-50 dark:hover:bg-emerald-900/30 disabled:opacity-70 transition-colors"
+            title="Repurpose for other platforms"
+          >
+            {generatingRepurpose ? (
+              <Loader2 className="w-4 h-4 animate-spin" />
+            ) : (
+              <Repeat2 className="w-4 h-4" />
+            )}
+            Repurpose
+          </button>
+
+          <div className="flex-1" />
+
+          {/* Post to LinkedIn */}
+          {!post.postedToLinkedIn ? (
+            <button
+              onClick={handlePublishClick}
+              disabled={posting || isTrialExpired}
+              className="flex items-center gap-1.5 text-sm px-4 py-2 bg-[#0A66C2] text-white rounded-lg hover:bg-[#004182] transition-colors disabled:opacity-70"
+              title={isTrialExpired ? "Subscribe to post to LinkedIn" : undefined}
+            >
+              {posting ? (
+                <Loader2 className="w-4 h-4 animate-spin" />
+              ) : (
+                <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 24 24">
+                  <path d="M20.447 20.452h-3.554v-5.569c0-1.328-.027-3.037-1.852-3.037-1.853 0-2.136 1.445-2.136 2.939v5.667H9.351V9h3.414v1.561h.046c.477-.9 1.637-1.85 3.37-1.85 3.601 0 4.267 2.37 4.267 5.455v6.286zM5.337 7.433a2.062 2.062 0 01-2.063-2.065 2.064 2.064 0 112.063 2.065zm1.782 13.019H3.555V9h3.564v11.452zM22.225 0H1.771C.792 0 0 .774 0 1.729v20.542C0 23.227.792 24 1.771 24h20.451C23.2 24 24 23.227 24 22.271V1.729C24 .774 23.2 0 22.222 0h.003z" />
+                </svg>
+              )}
+              {posting ? "Posting..." : "Post to LinkedIn"}
+            </button>
+          ) : (
+            <a
+              href={`https://www.linkedin.com/feed/update/${post.linkedinPostId ?? ""}`}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="flex items-center gap-1.5 text-sm px-4 py-2 bg-green-50 dark:bg-green-900/30 text-green-700 dark:text-green-400 border border-green-200 dark:border-green-800 rounded-lg hover:bg-green-100 dark:hover:bg-green-900/50 transition-colors"
+            >
+              <CheckCircle className="w-4 h-4" />
+              View on LinkedIn
+              <ExternalLink className="w-3 h-3" />
+            </a>
+          )}
+
+          {!isPublished && (
+            <>
+              <button
+                onClick={handleSave}
+                disabled={saving}
+                className="flex items-center gap-1.5 text-sm px-4 py-2 linkedin-gradient text-white rounded-lg hover:opacity-90 disabled:opacity-70"
+              >
+                {saving ? (
+                  <Loader2 className="w-4 h-4 animate-spin" />
+                ) : saved ? (
+                  <CheckCircle className="w-4 h-4" />
+                ) : (
+                  <Save className="w-4 h-4" />
+                )}
+                {saved ? "Saved!" : "Save"}
+              </button>
+              <button
+                onClick={() => setShowDeleteConfirm(true)}
+                className="flex items-center gap-1.5 text-sm px-3 py-2 border border-red-200 dark:border-red-800 text-red-600 dark:text-red-400 rounded-lg hover:bg-red-50 dark:hover:bg-red-900/30 transition-colors"
+                title="Delete post"
+              >
+                <Trash2 className="w-4 h-4" />
+              </button>
+            </>
+          )}
+        </div>
+      </div>
+
+      {/* Post result alerts */}
+      {postResult && (
+        <div className={cn("rounded-xl p-4 flex items-start gap-3", postResult.success ? "bg-green-50 dark:bg-green-900/30 border border-green-200 dark:border-green-800" : "bg-red-50 dark:bg-red-900/30 border border-red-200 dark:border-red-800")}>
+          {postResult.success ? (
+            <CheckCircle className="w-5 h-5 text-green-600 dark:text-green-400 flex-shrink-0" />
+          ) : (
+            <AlertCircle className="w-5 h-5 text-red-600 dark:text-red-400 flex-shrink-0" />
+          )}
+          <p className={cn("text-sm", postResult.success ? "text-green-700 dark:text-green-300" : "text-red-700 dark:text-red-300")}>
+            {postResult.success
+              ? "Successfully posted to LinkedIn!"
+              : `Failed to post: ${postResult.error}`}
+          </p>
+        </div>
+      )}
+
+      {/* Last auto-post error */}
+      {post.postError && !post.postedToLinkedIn && !postResult && (
+        <div className="bg-red-50 dark:bg-red-900/30 border border-red-200 dark:border-red-800 rounded-xl p-4 flex items-start gap-3">
+          <AlertCircle className="w-5 h-5 text-red-600 dark:text-red-400 flex-shrink-0" />
+          <div>
+            <p className="text-sm font-medium text-red-700 dark:text-red-300">Auto-post failed</p>
+            <p className="text-xs text-red-600 dark:text-red-400 mt-1">{post.postError}</p>
+          </div>
+        </div>
+      )}
+
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+        {/* Editor */}
+        <div className="lg:col-span-2 space-y-4">
+          {/* Title */}
+          <div>
+            <label className="text-xs font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wide mb-1.5 block">
+              Post Hook / Opening Line
+            </label>
+            <input
+              value={title}
+              onChange={(e) => setTitle(e.target.value)}
+              disabled={isPublished}
+              className={cn(
+                "w-full px-4 py-3 border border-gray-200 dark:border-gray-700 rounded-xl text-sm font-medium focus:outline-none focus:ring-2 focus:ring-linkedin-blue/20 focus:border-linkedin-blue bg-white dark:bg-gray-900 dark:text-gray-100",
+                isPublished && "bg-gray-50 dark:bg-gray-800 text-gray-500 dark:text-gray-400 cursor-not-allowed"
+              )}
+              placeholder="Post hook..."
+            />
+          </div>
+
+          {/* Body */}
+          <div>
+            <div className="flex items-center justify-between mb-1.5">
+              <label className="text-xs font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wide">
+                Post Body
+              </label>
+              <span className={cn("text-xs", charCount > charLimit * 0.9 ? "text-orange-500" : "text-gray-400 dark:text-gray-500")}>
+                {charCount} / {charLimit}
+              </span>
+            </div>
+            <textarea
+              value={body}
+              onChange={(e) => setBody(e.target.value)}
+              disabled={isPublished}
+              rows={14}
+              className={cn(
+                "w-full px-4 py-3 border border-gray-200 dark:border-gray-700 rounded-xl text-sm leading-relaxed focus:outline-none focus:ring-2 focus:ring-linkedin-blue/20 focus:border-linkedin-blue resize-none bg-white dark:bg-gray-900 dark:text-gray-100",
+                isPublished && "bg-gray-50 dark:bg-gray-800 text-gray-500 dark:text-gray-400 cursor-not-allowed"
+              )}
+              placeholder="Post content..."
+            />
+          </div>
+
+          {/* Hashtags Editor */}
+          <div>
+            <label className="text-xs font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wide mb-1.5 flex items-center gap-1">
+              <Hash className="w-3 h-3" />
+              Hashtags
+              <span className="font-normal text-gray-400 dark:text-gray-500 ml-1">({hashtags.length})</span>
+            </label>
+            <div className="flex flex-wrap gap-2 mb-2">
+              {hashtags.map((tag, i) => (
+                <span
+                  key={i}
+                  className="group flex items-center gap-1 text-xs px-2.5 py-1 bg-blue-50 dark:bg-blue-900/30 text-linkedin-blue dark:text-blue-400 rounded-lg"
+                >
+                  #{tag}
+                  {!isPublished && (
+                    <button
+                      onClick={() => {
+                        setHashtags((prev) => prev.filter((_, idx) => idx !== i));
+                      }}
+                      className="ml-0.5 opacity-0 group-hover:opacity-100 hover:text-red-500 transition-opacity"
+                      title="Remove hashtag"
+                    >
+                      <X className="w-3 h-3" />
+                    </button>
+                  )}
+                </span>
+              ))}
+            </div>
+            {!isPublished && (
+              <div className="flex gap-2">
+                <input
+                  type="text"
+                  placeholder="Add hashtag..."
+                  className="flex-1 px-3 py-2 text-xs border border-gray-200 dark:border-gray-700 rounded-lg focus:outline-none focus:ring-2 focus:ring-linkedin-blue/20 focus:border-linkedin-blue bg-white dark:bg-gray-900 dark:text-gray-100"
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") {
+                      e.preventDefault();
+                      const input = e.currentTarget;
+                      const value = input.value.trim().replace(/^#/, "").replace(/\s+/g, "");
+                      if (value && !hashtags.includes(value)) {
+                        setHashtags((prev) => [...prev, value]);
+                        input.value = "";
+                      }
+                    }
+                  }}
+                />
+                <button
+                  onClick={(e) => {
+                    const input = (e.currentTarget.previousElementSibling as HTMLInputElement);
+                    const value = input.value.trim().replace(/^#/, "").replace(/\s+/g, "");
+                    if (value && !hashtags.includes(value)) {
+                      setHashtags((prev) => [...prev, value]);
+                      input.value = "";
+                    }
+                  }}
+                  className="px-3 py-2 text-xs font-medium border border-gray-200 dark:border-gray-700 rounded-lg hover:bg-gray-50 dark:hover:bg-gray-800 transition-colors text-gray-600 dark:text-gray-300"
+                >
+                  Add
+                </button>
+              </div>
+            )}
+          </div>
+
+          {/* Post Signature Preview */}
+          {postSignature && (
+            <div>
+              <label className="text-xs font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wide mb-1.5 block">
+                Signature (auto-appended)
+              </label>
+              <div className="bg-gray-50 dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-xl px-4 py-3">
+                <p className="text-sm text-gray-600 dark:text-gray-400 whitespace-pre-line">{postSignature}</p>
+              </div>
+            </div>
+          )}
+
+          {/* Actions — hidden for published posts */}
+          {!isPublished && (
+            isTrialExpired ? (
+              <div className="flex items-center gap-3 p-3 bg-gray-50 dark:bg-gray-800/50 rounded-xl border border-gray-200 dark:border-gray-700">
+                <AlertCircle className="w-4 h-4 text-gray-400 flex-shrink-0" />
+                <p className="text-sm text-gray-500 dark:text-gray-400">
+                  Your trial has ended.{" "}
+                  <a href="/subscribe" className="text-[#0A66C2] font-semibold hover:underline">Subscribe</a>
+                  {" "}to regenerate posts, generate images, and create variants.
+                </p>
+              </div>
+            ) : (
+            <div className="flex items-center gap-3 flex-wrap">
+              <button
+                onClick={handleRegenerate}
+                disabled={regenerating}
+                className="flex items-center gap-2 text-sm px-4 py-2 border border-gray-200 dark:border-gray-700 rounded-lg hover:bg-gray-50 dark:hover:bg-gray-800 disabled:opacity-70 transition-colors dark:text-gray-300"
+              >
+                {regenerating ? (
+                  <Loader2 className="w-4 h-4 animate-spin" />
+                ) : (
+                  <Sparkles className="w-4 h-4 text-linkedin-blue" />
+                )}
+                Regenerate Post
+              </button>
+              {previousVersion && (
+                <button
+                  onClick={handleUndoRegenerate}
+                  className="flex items-center gap-1.5 text-sm px-3 py-2 border border-amber-200 dark:border-amber-800 text-amber-700 dark:text-amber-400 rounded-lg hover:bg-amber-50 dark:hover:bg-amber-900/30 transition-colors"
+                  title="Restore previous version"
+                >
+                  <ArrowLeft className="w-4 h-4" />
+                  Undo
+                </button>
+              )}
+
+              <button
+                onClick={handleGenerateVariants}
+                disabled={generatingVariants}
+                className="flex items-center gap-2 text-sm px-4 py-2 border border-purple-200 dark:border-purple-800 text-purple-700 dark:text-purple-400 rounded-lg hover:bg-purple-50 dark:hover:bg-purple-900/30 disabled:opacity-70 transition-colors"
+              >
+                {generatingVariants ? (
+                  <Loader2 className="w-4 h-4 animate-spin" />
+                ) : (
+                  <Wand2 className="w-4 h-4" />
+                )}
+                Generate Variants
+              </button>
+
+              <button
+                onClick={handleGenerateImage}
+                disabled={generatingImage || imageGenRemaining <= 0}
+                className="flex items-center gap-2 text-sm px-4 py-2 border border-gray-200 dark:border-gray-700 rounded-lg hover:bg-gray-50 dark:hover:bg-gray-800 disabled:opacity-70 transition-colors dark:text-gray-300"
+                title={imageGenRemaining <= 0 ? "Image generation limit reached for this post" : `${imageGenRemaining} generation${imageGenRemaining === 1 ? "" : "s"} remaining`}
+              >
+                {generatingImage ? (
+                  <Loader2 className="w-4 h-4 animate-spin" />
+                ) : (
+                  <ImageIcon className="w-4 h-4 text-linkedin-blue" />
+                )}
+                {imageGenRemaining <= 0 ? "Limit Reached" : imageUrl ? "Regenerate Image" : "Generate Image"}
+              </button>
+            </div>
+            )
+          )}
+
+        </div>
+
+        {/* Sidebar */}
+        <div className="space-y-4">
+          {/* Image Preview */}
+          <div className="bg-white dark:bg-gray-900 rounded-2xl border border-gray-100 dark:border-gray-800 shadow-sm overflow-hidden">
+            <div className="p-4 border-b border-gray-100 dark:border-gray-800 flex items-center justify-between">
+              <h3 className="text-sm font-semibold text-gray-700 dark:text-gray-300">Post Image</h3>
+              {imageUrl && (
+                <div className="flex items-center gap-1">
+                  <button
+                    onClick={() => setLightboxOpen(true)}
+                    className="p-1.5 text-gray-400 hover:text-gray-700 dark:hover:text-gray-200 hover:bg-gray-100 dark:hover:bg-gray-800 rounded-lg transition-colors"
+                    title="View full size"
+                  >
+                    <ZoomIn className="w-4 h-4" />
+                  </button>
+                  {!isPublished && (
+                    <button
+                      onClick={handleRemoveImage}
+                      className="p-1.5 text-gray-400 hover:text-red-600 hover:bg-red-50 dark:hover:bg-red-900/30 rounded-lg transition-colors"
+                      title="Remove image"
+                    >
+                      <Trash2 className="w-4 h-4" />
+                    </button>
+                  )}
+                </div>
+              )}
+            </div>
+            <div className="p-4">
+              {imageUrl ? (
+                <div
+                  className="relative aspect-square rounded-xl overflow-hidden cursor-pointer group"
+                  onClick={() => setLightboxOpen(true)}
+                >
+                  <Image src={imageUrl} alt="Post image" fill className="object-cover" />
+                  <div className="absolute inset-0 bg-black/0 group-hover:bg-black/20 transition-colors flex items-center justify-center">
+                    <ZoomIn className="w-6 h-6 text-white opacity-0 group-hover:opacity-100 transition-opacity drop-shadow-lg" />
+                  </div>
+                </div>
+              ) : (
+                <div
+                  className={cn(
+                    "aspect-square rounded-xl bg-gray-50 dark:bg-gray-800 border-2 border-dashed border-gray-200 dark:border-gray-700 flex flex-col items-center justify-center transition-colors",
+                    imageGenRemaining > 0 ? "cursor-pointer hover:bg-gray-100 dark:hover:bg-gray-750" : "opacity-60"
+                  )}
+                  onClick={imageGenRemaining > 0 ? handleGenerateImage : undefined}
+                >
+                  {generatingImage ? (
+                    <>
+                      <Loader2 className="w-8 h-8 text-linkedin-blue animate-spin mb-2" />
+                      <p className="text-xs text-gray-500 dark:text-gray-400">Generating...</p>
+                    </>
+                  ) : imageGenRemaining <= 0 ? (
+                    <>
+                      <ImageIcon className="w-8 h-8 text-gray-300 dark:text-gray-600 mb-2" />
+                      <p className="text-xs text-gray-500 dark:text-gray-400 text-center px-4">
+                        Generation limit reached. Upload an image instead.
+                      </p>
+                    </>
+                  ) : (
+                    <>
+                      <ImageIcon className="w-8 h-8 text-gray-300 dark:text-gray-600 mb-2" />
+                      <p className="text-xs text-gray-500 dark:text-gray-400 text-center px-4">
+                        Click to generate an AI image
+                      </p>
+                    </>
+                  )}
+                </div>
+              )}
+
+              {/* Upload / Replace buttons — hidden for published posts */}
+              {!isPublished && (
+                <>
+                  <div className="mt-3 flex gap-2">
+                    <input
+                      ref={fileInputRef}
+                      type="file"
+                      accept="image/jpeg,image/png,image/gif,image/webp"
+                      onChange={handleImageUpload}
+                      className="hidden"
+                    />
+                    <button
+                      onClick={() => fileInputRef.current?.click()}
+                      disabled={uploading}
+                      className="flex-1 flex items-center justify-center gap-1.5 text-xs px-3 py-2 border border-gray-200 dark:border-gray-700 rounded-lg hover:bg-gray-50 dark:hover:bg-gray-800 disabled:opacity-70 transition-colors dark:text-gray-300"
+                    >
+                      {uploading ? (
+                        <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                      ) : (
+                        <Upload className="w-3.5 h-3.5 text-gray-500 dark:text-gray-400" />
+                      )}
+                      {uploading ? "Uploading..." : imageUrl ? "Replace Image" : "Upload Image"}
+                    </button>
+                    <button
+                      onClick={handleGenerateImage}
+                      disabled={generatingImage || imageGenRemaining <= 0}
+                      className="flex-1 flex items-center justify-center gap-1.5 text-xs px-3 py-2 border border-gray-200 dark:border-gray-700 rounded-lg hover:bg-gray-50 dark:hover:bg-gray-800 disabled:opacity-70 transition-colors dark:text-gray-300"
+                      title={imageGenRemaining <= 0 ? "Limit reached" : `${imageGenRemaining} left`}
+                    >
+                      {generatingImage ? (
+                        <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                      ) : (
+                        <Sparkles className="w-3.5 h-3.5 text-linkedin-blue" />
+                      )}
+                      {generatingImage ? "Generating..." : imageGenRemaining <= 0 ? "Limit Reached" : imageUrl ? "Regenerate" : "AI Generate"}
+                    </button>
+                  </div>
+                  <p className="text-[10px] text-gray-400 dark:text-gray-500 mt-2 text-center">
+                    JPG, PNG, GIF, WebP &middot; Max 5MB
+                  </p>
+                  <p className={cn(
+                    "text-[10px] mt-1 text-center",
+                    imageGenRemaining <= 0 ? "text-amber-500 dark:text-amber-400" : "text-gray-400 dark:text-gray-500"
+                  )}>
+                    {imageGenRemaining <= 0
+                      ? "AI generation limit reached for this post"
+                      : `${imageGenRemaining} of ${IMAGE_GEN_LIMIT} AI generation${IMAGE_GEN_LIMIT === 1 ? "" : "s"} remaining`}
+                  </p>
+                </>
+              )}
+            </div>
+          </div>
+
+          {/* Post Details */}
+          <div className="bg-white dark:bg-gray-900 rounded-2xl border border-gray-100 dark:border-gray-800 shadow-sm p-4 space-y-3">
+            <h3 className="text-sm font-semibold text-gray-700 dark:text-gray-300">Post Details</h3>
+            <div>
+              <label className="text-xs text-gray-500 dark:text-gray-400 mb-1 block">Status</label>
+              <select
+                value={status}
+                onChange={(e) => setStatus(e.target.value)}
+                className="w-full px-3 py-2 text-sm border border-gray-200 dark:border-gray-700 rounded-lg focus:outline-none focus:ring-2 focus:ring-linkedin-blue/20 bg-white dark:bg-gray-800 dark:text-gray-100"
+                disabled={post.postedToLinkedIn || isTrialExpired}
+              >
+                <option value="draft">Draft</option>
+                <option value="ready">Ready (auto-post)</option>
+                <option value="published">Published</option>
+              </select>
+            </div>
+            {/* Auto-Publish Schedule */}
+            <div>
+              <label className="text-xs text-gray-500 dark:text-gray-400 mb-1 flex items-center gap-1">
+                <Clock className="w-3.5 h-3.5" />
+                Auto-Publish Date & Time
+              </label>
+              <div className="flex gap-2">
+                <input
+                  type="date"
+                  value={scheduledDate}
+                  onChange={(e) => setScheduledDate(e.target.value)}
+                  disabled={post.postedToLinkedIn}
+                  className="flex-1 px-2 py-1.5 text-xs border border-gray-200 dark:border-gray-700 rounded-lg focus:outline-none focus:ring-2 focus:ring-linkedin-blue/20 disabled:opacity-50 bg-white dark:bg-gray-800 dark:text-gray-100"
+                />
+                <input
+                  type="time"
+                  value={scheduledTime}
+                  onChange={(e) => setScheduledTime(e.target.value)}
+                  disabled={post.postedToLinkedIn}
+                  className="w-24 px-2 py-1.5 text-xs border border-gray-200 dark:border-gray-700 rounded-lg focus:outline-none focus:ring-2 focus:ring-linkedin-blue/20 disabled:opacity-50 bg-white dark:bg-gray-800 dark:text-gray-100"
+                />
+              </div>
+              <p className="text-[10px] text-gray-400 dark:text-gray-500 mt-1">
+                Timezone: {userTimezone.replace(/_/g, " ")}
+              </p>
+              {isWeekend && (
+                <p className="text-xs text-amber-600 dark:text-amber-400 mt-1 flex items-center gap-1">
+                  <AlertCircle className="w-3 h-3" />
+                  Weekend selected — posts may get less engagement
+                </p>
+              )}
+            </div>
+            {post.postedToLinkedIn && (
+              <div className="flex items-center gap-2 text-xs text-[#0A66C2] dark:text-blue-400 bg-blue-50 dark:bg-blue-900/30 px-2 py-1.5 rounded-lg">
+                <CheckCircle className="w-3.5 h-3.5" />
+                Posted to LinkedIn
+              </div>
+            )}
+            {post.imagePrompt && (
+              <div>
+                <label className="text-xs text-gray-500 dark:text-gray-400 mb-1 block">Image Prompt</label>
+                <p className="text-xs text-gray-600 dark:text-gray-400 bg-gray-50 dark:bg-gray-800 p-2 rounded-lg leading-relaxed line-clamp-3">
+                  {post.imagePrompt}
+                </p>
+              </div>
+            )}
+          </div>
+
+          {/* Human Mode Toggle */}
+          <div className="bg-white dark:bg-gray-900 rounded-2xl border border-gray-100 dark:border-gray-800 shadow-sm p-4">
+            <div className="flex items-center justify-between">
+              <div>
+                <p className="text-sm font-semibold text-gray-700 dark:text-gray-300">Human Mode</p>
+                <p className="text-xs text-gray-500 dark:text-gray-400 mt-0.5">Makes AI content less detectable</p>
+              </div>
+              <button
+                onClick={cycleHumanMode}
+                disabled={isPublished}
+                className={cn(
+                  "w-12 h-6 rounded-full transition-colors relative flex items-center",
+                  humanModeBg,
+                  isPublished && "opacity-50 cursor-not-allowed"
+                )}
+                title="Cycle human mode: Default → On → Off"
+              >
+                <span
+                  className={cn(
+                    "w-4 h-4 bg-white rounded-full shadow transition-transform mx-1",
+                    humanMode === true ? "translate-x-6" : humanMode === false ? "translate-x-0" : "translate-x-3"
+                  )}
+                />
+              </button>
+            </div>
+            <p className="text-xs text-gray-400 dark:text-gray-500 mt-2">
+              {humanMode === null
+                ? "Using your account default setting"
+                : humanMode
+                ? "Enabled for this post"
+                : "Disabled for this post"}
+              {" "}<span className="font-medium">({humanModeLabel})</span>
+            </p>
+          </div>
+        </div>
+      </div>
+
+      {/* LinkedIn Post Preview */}
+      <LinkedInPostPreview
+        name={userProfile.name}
+        image={userProfile.image}
+        headline={userProfile.headline}
+        title={title}
+        body={body}
+        hashtags={hashtags}
+        postSignature={postSignature}
+        imageUrl={imageUrl}
+      />
+
+      {/* Lightbox Modal */}
+      {lightboxOpen && imageUrl && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 p-4"
+          onClick={() => setLightboxOpen(false)}
+        >
+          <button
+            onClick={() => setLightboxOpen(false)}
+            className="absolute top-4 right-4 p-2 bg-white/10 hover:bg-white/20 rounded-full text-white transition-colors"
+          >
+            <X className="w-6 h-6" />
+          </button>
+          <div
+            className="relative max-w-4xl max-h-[90vh] w-full h-full"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <Image
+              src={imageUrl}
+              alt="Post image full view"
+              fill
+              className="object-contain"
+              sizes="(max-width: 1024px) 100vw, 80vw"
+            />
+          </div>
+          <div className="absolute bottom-4 left-1/2 -translate-x-1/2 flex items-center gap-3">
+            <a
+              href={imageUrl}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="flex items-center gap-1.5 text-sm px-4 py-2 bg-white/10 hover:bg-white/20 text-white rounded-lg transition-colors backdrop-blur-sm"
+            >
+              <ExternalLink className="w-4 h-4" />
+              Open in New Tab
+            </a>
+            <button
+              onClick={() => {
+                fileInputRef.current?.click();
+                setLightboxOpen(false);
+              }}
+              className="flex items-center gap-1.5 text-sm px-4 py-2 bg-white/10 hover:bg-white/20 text-white rounded-lg transition-colors backdrop-blur-sm"
+            >
+              <Upload className="w-4 h-4" />
+              Upload New
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* Variant Modal */}
+      {showVariants && (
+        <VariantModal
+          variants={variants}
+          loading={generatingVariants}
+          onSelect={handleVariantSelect}
+          onClose={() => setShowVariants(false)}
+        />
+      )}
+
+      {/* Repurpose Modal */}
+      {showRepurpose && (
+        <RepurposeModal
+          results={repurposeResults}
+          loading={generatingRepurpose}
+          onClose={() => setShowRepurpose(false)}
+        />
+      )}
+
+      {/* Pre-publish Checklist Modal */}
+      {showPublishChecklist && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
+          <div className="bg-white dark:bg-gray-900 rounded-2xl shadow-xl w-full max-w-sm p-6 space-y-5">
+            <div className="flex items-center gap-3">
+              <div className="w-10 h-10 bg-blue-100 dark:bg-blue-900/40 rounded-xl flex items-center justify-center flex-shrink-0">
+                <svg className="w-5 h-5 text-[#0A66C2]" fill="currentColor" viewBox="0 0 24 24">
+                  <path d="M20.447 20.452h-3.554v-5.569c0-1.328-.027-3.037-1.852-3.037-1.853 0-2.136 1.445-2.136 2.939v5.667H9.351V9h3.414v1.561h.046c.477-.9 1.637-1.85 3.37-1.85 3.601 0 4.267 2.37 4.267 5.455v6.286zM5.337 7.433a2.062 2.062 0 01-2.063-2.065 2.064 2.064 0 112.063 2.065zm1.782 13.019H3.555V9h3.564v11.452zM22.225 0H1.771C.792 0 0 .774 0 1.729v20.542C0 23.227.792 24 1.771 24h20.451C23.2 24 24 23.227 24 22.271V1.729C24 .774 23.2 0 22.222 0h.003z" />
+                </svg>
+              </div>
+              <div>
+                <h3 className="text-lg font-bold text-gray-900 dark:text-gray-100">Pre-publish Checklist</h3>
+                <p className="text-xs text-gray-500 dark:text-gray-400">Review before posting to LinkedIn</p>
+              </div>
+            </div>
+            <div className="space-y-2">
+              {getPublishChecklist().map((item) => (
+                <div key={item.label} className="flex items-center gap-3 p-2.5 rounded-lg bg-gray-50 dark:bg-gray-800">
+                  {item.passed ? (
+                    <CheckCircle className="w-5 h-5 text-green-500 flex-shrink-0" />
+                  ) : (
+                    <AlertCircle className={cn("w-5 h-5 flex-shrink-0", item.optional ? "text-amber-400" : "text-red-500")} />
+                  )}
+                  <span className={cn("text-sm", item.passed ? "text-gray-700 dark:text-gray-300" : item.optional ? "text-amber-700 dark:text-amber-300" : "text-red-700 dark:text-red-300")}>
+                    {item.label}
+                    {!item.passed && item.optional && <span className="text-xs text-gray-400 ml-1">(optional)</span>}
+                  </span>
+                </div>
+              ))}
+            </div>
+            {!getPublishChecklist()[0].passed && (
+              <p className="text-xs text-red-500 dark:text-red-400">Post body must have at least 20 characters to publish.</p>
+            )}
+            <p className="text-xs text-center text-gray-400 dark:text-gray-500 flex items-center justify-center gap-1">
+              <svg className="w-3.5 h-3.5 text-green-500 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M9 12.75L11.25 15 15 9.75m-3-7.036A11.959 11.959 0 013.598 6 11.99 11.99 0 003 9.749c0 5.592 3.824 10.29 9 11.623 5.176-1.332 9-6.03 9-11.622 0-1.31-.21-2.571-.598-3.751h-.152c-3.196 0-6.1-1.248-8.25-3.285z" /></svg>
+              Posted via LinkedIn&apos;s official API — safe &amp; compliant
+            </p>
+            <div className="flex gap-3">
+              <button
+                onClick={() => setShowPublishChecklist(false)}
+                className="flex-1 py-2.5 border border-gray-200 dark:border-gray-700 rounded-xl text-sm font-medium text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-800 transition-colors"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={handlePostToLinkedIn}
+                disabled={!getPublishChecklist()[0].passed}
+                className="flex-1 py-2.5 bg-[#0A66C2] text-white rounded-xl text-sm font-medium hover:bg-[#004182] transition-colors disabled:opacity-50 flex items-center justify-center gap-2"
+              >
+                <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 24 24">
+                  <path d="M20.447 20.452h-3.554v-5.569c0-1.328-.027-3.037-1.852-3.037-1.853 0-2.136 1.445-2.136 2.939v5.667H9.351V9h3.414v1.561h.046c.477-.9 1.637-1.85 3.37-1.85 3.601 0 4.267 2.37 4.267 5.455v6.286zM5.337 7.433a2.062 2.062 0 01-2.063-2.065 2.064 2.064 0 112.063 2.065zm1.782 13.019H3.555V9h3.564v11.452zM22.225 0H1.771C.792 0 0 .774 0 1.729v20.542C0 23.227.792 24 1.771 24h20.451C23.2 24 24 23.227 24 22.271V1.729C24 .774 23.2 0 22.222 0h.003z" />
+                </svg>
+                Publish Now
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Delete Confirmation Modal */}
+      {showDeleteConfirm && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
+          <div className="bg-white dark:bg-gray-900 rounded-2xl shadow-xl w-full max-w-sm p-6 space-y-5">
+            <div className="flex items-start gap-3">
+              <div className="w-10 h-10 bg-red-100 dark:bg-red-900/40 rounded-xl flex items-center justify-center flex-shrink-0">
+                <Trash2 className="w-5 h-5 text-red-600 dark:text-red-400" />
+              </div>
+              <div>
+                <h3 className="text-lg font-bold text-gray-900 dark:text-gray-100">Delete this post?</h3>
+                <p className="text-sm text-gray-500 dark:text-gray-400 mt-1">
+                  This action cannot be undone. The post and its generated image will be permanently removed.
+                </p>
+              </div>
+            </div>
+            <div className="flex gap-3">
+              <button
+                onClick={() => setShowDeleteConfirm(false)}
+                className="flex-1 py-2.5 border border-gray-200 dark:border-gray-700 rounded-xl text-sm font-medium text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-800 transition-colors"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={handleDelete}
+                disabled={deleting}
+                className="flex-1 py-2.5 bg-red-600 text-white rounded-xl text-sm font-medium hover:bg-red-700 transition-colors disabled:opacity-70 flex items-center justify-center gap-2"
+              >
+                {deleting && <Loader2 className="w-4 h-4 animate-spin" />}
+                Delete
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}

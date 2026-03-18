@@ -1,0 +1,123 @@
+import { NextRequest, NextResponse } from "next/server";
+import { getServerSession } from "next-auth";
+import { authOptions } from "@/lib/auth";
+import { prisma } from "@/lib/prisma";
+
+const DEV_MODE =
+  process.env.NODE_ENV !== "production" &&
+  (!process.env.NEXT_PUBLIC_RAZORPAY_KEY_ID ||
+   !process.env.RAZORPAY_KEY_SECRET ||
+   process.env.NEXT_PUBLIC_RAZORPAY_KEY_ID === "rzp_test_REPLACE_ME");
+
+export async function POST(req: NextRequest) {
+  const session = await getServerSession(authOptions);
+  if (!session?.user?.id) {
+    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
+
+  // Parse optional currency from body (default INR)
+  let currency: "INR" | "USD" = "INR";
+  try {
+    const body = await req.json();
+    if (body.currency === "USD") currency = "USD";
+  } catch {
+    // no body → default INR
+  }
+
+  // ── DEV BYPASS ─────────────────────────────────────────────────────────────
+  // When Razorpay keys are not configured, immediately activate the subscription
+  // so the full app flow can be tested without a real payment gateway.
+  if (DEV_MODE) {
+    const currentPeriodEnd = new Date();
+    currentPeriodEnd.setFullYear(currentPeriodEnd.getFullYear() + 1);
+
+    await prisma.subscription.upsert({
+      where: { userId: session.user.id },
+      update: {
+        status: "active",
+        trialEnd: null,
+        currentPeriodEnd,
+        currency,
+      },
+      create: {
+        userId: session.user.id,
+        status: "active",
+        currentPeriodEnd,
+        currency,
+      },
+    });
+
+    console.log(`[DEV] Subscription activated for user ${session.user.id}`);
+    return NextResponse.json({
+      dev: true,
+      redirectUrl: `${process.env.NEXTAUTH_URL ?? "http://localhost:3002"}/dashboard?subscribed=true`,
+    });
+  }
+  // ── END DEV BYPASS ─────────────────────────────────────────────────────────
+
+  const { razorpay, getPlanId } = await import("@/lib/razorpay");
+
+  const user = await prisma.user.findUnique({
+    where: { id: session.user.id },
+    include: { subscription: true },
+  });
+
+  if (!user) {
+    return NextResponse.json({ error: "User not found" }, { status: 404 });
+  }
+
+  // Create or retrieve Razorpay Customer
+  let customerId = user.subscription?.razorpayCustomerId;
+  if (!customerId) {
+    const customer = await razorpay.customers.create({
+      name: user.name ?? "User",
+      email: user.email ?? undefined,
+      notes: { userId: session.user.id },
+    } as Parameters<typeof razorpay.customers.create>[0]);
+    customerId = customer.id;
+
+    // Upsert subscription row with customer ID
+    if (user.subscription) {
+      await prisma.subscription.update({
+        where: { userId: session.user.id },
+        data: { razorpayCustomerId: customerId, currency },
+      });
+    } else {
+      const trialEnd = new Date();
+      trialEnd.setDate(trialEnd.getDate() + 7);
+      await prisma.subscription.create({
+        data: {
+          userId: session.user.id,
+          razorpayCustomerId: customerId,
+          status: "trialing",
+          trialEnd,
+          currency,
+        },
+      });
+    }
+  }
+
+  // Create Razorpay Subscription
+  const planId = getPlanId(currency);
+  const subscription = await razorpay.subscriptions.create({
+    plan_id: planId,
+    customer_id: customerId,
+    total_count: 120, // Up to 10 years of monthly billing
+    notes: { userId: session.user.id, currency },
+  } as Parameters<typeof razorpay.subscriptions.create>[0]);
+
+  // Store the subscription + plan info
+  await prisma.subscription.update({
+    where: { userId: session.user.id },
+    data: {
+      razorpaySubscriptionId: subscription.id,
+      razorpayPlanId: planId,
+      currency,
+    },
+  });
+
+  return NextResponse.json({
+    subscriptionId: subscription.id,
+    keyId: process.env.NEXT_PUBLIC_RAZORPAY_KEY_ID,
+  });
+}

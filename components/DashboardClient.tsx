@@ -1,0 +1,475 @@
+"use client";
+
+import { useState, useRef } from "react";
+import { useRouter } from "next/navigation";
+import Link from "next/link";
+import {
+  Sparkles,
+  Calendar,
+  FileText,
+  Mail,
+  TrendingUp,
+  Clock,
+  CheckCircle,
+  AlertCircle,
+  ArrowRight,
+  Loader2,
+  Linkedin,
+  Info,
+  Lock,
+  RefreshCw,
+  XCircle,
+} from "lucide-react";
+import { cn, formatDate, getPostTypeColor } from "@/lib/utils";
+
+interface Post {
+  id: string;
+  title: string;
+  postType: string;
+  scheduledAt: Date | null;
+  status: string;
+  weekNumber: number;
+  postedToLinkedIn: boolean;
+}
+
+interface Props {
+  user: { name?: string | null; headline?: string | null; industry?: string | null; image?: string | null } | null;
+  recentPlan: { id: string; strategy: string; weekStart: Date } | null;
+  stats: { totalPosts: number; readyPosts: number; draftPosts: number; publishedPosts: number; newsletters: number };
+  upcomingPosts: Post[];
+  nextStartDate: string; // ISO date string — where the next batch starts
+  postsRemaining: number; // posts remaining in billing cycle
+  postsLimit: number; // total posts allowed per cycle (30)
+  isTrialExpired: boolean; // whether user's trial has ended
+  postsPerBatch: number; // number of posts per generation (based on posting schedule)
+  postingDays: string[]; // e.g. ["Monday", "Wednesday", "Friday"]
+  cycleResetDate: string | null; // ISO date when post counter resets
+}
+
+export default function DashboardClient({ user, recentPlan, stats, upcomingPosts, nextStartDate, postsRemaining, postsLimit, isTrialExpired, postsPerBatch, postingDays, cycleResetDate }: Props) {
+  const router = useRouter();
+  const [generating, setGenerating] = useState(false);
+  const [progress, setProgress] = useState<string[]>([]);
+  const [generationError, setGenerationError] = useState<string | null>(null);
+  const abortControllerRef = useRef<AbortController | null>(null);
+
+  const limitReached = postsRemaining < postsPerBatch;
+
+  // Map day names to JS day numbers for schedule-aware date range
+  const dayNameToNum: Record<string, number> = {
+    Sunday: 0, Monday: 1, Tuesday: 2, Wednesday: 3,
+    Thursday: 4, Friday: 5, Saturday: 6,
+  };
+  const targetDayNums = new Set(postingDays.map((d) => dayNameToNum[d]).filter((d) => d !== undefined));
+
+  // Compute next batch date range based on user's posting days
+  const batchStart = new Date(nextStartDate);
+  const batchEnd = (() => {
+    const d = new Date(batchStart);
+    let found = 0;
+    // Find the last posting day in this batch
+    for (let i = 0; i < 30 && found < postsPerBatch; i++) {
+      if (targetDayNums.has(d.getDay())) found++;
+      if (found < postsPerBatch) d.setDate(d.getDate() + 1);
+    }
+    return d;
+  })();
+
+  function formatShortDate(date: Date): string {
+    return date.toLocaleDateString("en-US", { month: "short", day: "numeric" });
+  }
+
+  async function handleGenerate() {
+    const abortController = new AbortController();
+    abortControllerRef.current = abortController;
+    setGenerating(true);
+    setProgress([]);
+    setGenerationError(null);
+
+    try {
+      setProgress(["Analyzing your profile and creating strategy..."]);
+
+      // Don't send weekStart — let the API auto-compute from last scheduled post
+      const stratRes = await fetch("/api/generate/strategy", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({}),
+        signal: abortController.signal,
+      });
+      if (!stratRes.ok) throw new Error("Strategy generation failed");
+      const { plan: newPlan, strategy } = await stratRes.json();
+
+      setProgress((p) => [
+        ...p,
+        `Strategy ready: "${strategy.weekTheme ?? "Content theme"}"`,
+      ]);
+
+      setProgress((p) => [...p, `Generating ${postsPerBatch} posts for your scheduled days...`]);
+      const postsRes = await fetch("/api/generate/posts", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ planId: newPlan.id }),
+        signal: abortController.signal,
+      });
+
+      if (!postsRes.ok) {
+        const errorData = await postsRes.json().catch(() => null);
+        if (postsRes.status === 429 && errorData?.error) {
+          setProgress((p) => [...p, errorData.error]);
+          return;
+        }
+        throw new Error("Posts generation failed");
+      }
+
+      const { posts, postsRemaining: remaining } = await postsRes.json();
+
+      setProgress((p) => [
+        ...p,
+        `${posts?.length ?? 5} draft posts created (${remaining} remaining this cycle)`,
+        "Done! Redirecting to your posts...",
+      ]);
+
+      setTimeout(() => router.push("/posts"), 1500);
+    } catch (err) {
+      if (err instanceof DOMException && err.name === "AbortError") {
+        setProgress((p) => [...p, "Generation cancelled."]);
+        setGenerationError(null);
+      } else {
+        console.error(err);
+        const message = err instanceof Error ? err.message : "Something went wrong";
+        setGenerationError(message);
+        setProgress((p) => [...p, `Error: ${message}`]);
+      }
+    } finally {
+      abortControllerRef.current = null;
+      setTimeout(() => {
+        setGenerating(false);
+        router.refresh();
+      }, 2000);
+    }
+  }
+
+  function handleCancelGeneration() {
+    if (abortControllerRef.current) {
+      abortControllerRef.current.abort();
+    }
+  }
+
+  const statCards = [
+    { label: "Total Posts", value: stats.totalPosts, icon: FileText, color: "text-blue-600 dark:text-blue-400", bg: "bg-blue-50 dark:bg-blue-900/30" },
+    { label: "Ready to Post", value: stats.readyPosts, icon: CheckCircle, color: "text-green-600 dark:text-green-400", bg: "bg-green-50 dark:bg-green-900/30" },
+    { label: "Published", value: stats.publishedPosts, icon: Linkedin, color: "text-[#0A66C2] dark:text-blue-400", bg: "bg-blue-50 dark:bg-blue-900/30" },
+    { label: "Drafts", value: stats.draftPosts, icon: AlertCircle, color: "text-orange-600 dark:text-orange-400", bg: "bg-orange-50 dark:bg-orange-900/30" },
+  ];
+
+  const profileIncomplete = !user?.headline || !user?.industry;
+
+  return (
+    <div className="space-y-8">
+      {/* Profile tip */}
+      {profileIncomplete && (
+        <div className="flex items-center gap-3 bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800 rounded-xl px-4 py-3">
+          <AlertCircle className="w-5 h-5 text-amber-600 dark:text-amber-400 flex-shrink-0" />
+          <p className="text-sm text-amber-800 dark:text-amber-300">
+            Update your professional headline, industry, and skills in{" "}
+            <Link href="/settings" className="font-semibold underline underline-offset-2 hover:text-amber-900 dark:hover:text-amber-200">
+              Settings
+            </Link>{" "}
+            before generating content for better, more personalized results.
+          </p>
+        </div>
+      )}
+
+      {/* Header */}
+      <div className="flex items-start justify-between flex-wrap gap-4">
+        <div>
+          <h1 className="text-2xl font-bold text-gray-900 dark:text-gray-100">
+            Good {getTimeOfDay()}, {user?.name?.split(" ")[0] ?? "there"}!
+          </h1>
+          <p className="text-gray-600 dark:text-gray-400 mt-1">
+            {user?.headline ?? "Ready to build your LinkedIn presence?"}
+          </p>
+        </div>
+
+        {/* Generate Button */}
+        <div className="flex flex-col items-end gap-2">
+          {isTrialExpired ? (
+            <Link
+              href="/subscribe"
+              className="flex items-center gap-2 bg-gray-300 dark:bg-gray-700 text-gray-600 dark:text-gray-400 px-5 py-2.5 rounded-xl font-medium hover:bg-gray-400 dark:hover:bg-gray-600 transition-colors"
+            >
+              <Lock className="w-4 h-4" />
+              Subscribe to Generate Posts
+            </Link>
+          ) : (
+          <button
+            onClick={handleGenerate}
+            disabled={generating || limitReached}
+            className="flex items-center gap-2 linkedin-gradient text-white px-5 py-2.5 rounded-xl font-medium hover:opacity-90 transition-opacity disabled:opacity-70 shadow-md shadow-blue-200 dark:shadow-blue-900/30"
+          >
+            {generating ? (
+              <Loader2 className="w-4 h-4 animate-spin" />
+            ) : (
+              <Sparkles className="w-4 h-4" />
+            )}
+            {limitReached ? "Post Limit Reached" : `Generate Next ${postsPerBatch} Posts`}
+          </button>
+          )}
+          {limitReached ? (
+            <div className="text-right">
+              <p className="text-xs text-red-500 dark:text-red-400">
+                {postsRemaining} of {postsLimit} posts remaining this cycle
+              </p>
+              {cycleResetDate && (
+                <p className="text-xs text-gray-400 dark:text-gray-500">
+                  Resets {formatShortDate(new Date(cycleResetDate))}
+                </p>
+              )}
+            </div>
+          ) : (
+            <div className="text-right">
+              <p className="text-xs text-gray-500 dark:text-gray-400">
+                {formatShortDate(batchStart)} &ndash; {formatShortDate(batchEnd)}
+              </p>
+              <p className="text-xs text-gray-400 dark:text-gray-500">
+                {postsRemaining} of {postsLimit} posts remaining
+                {cycleResetDate && (
+                  <> · resets {formatShortDate(new Date(cycleResetDate))}</>
+                )}
+              </p>
+            </div>
+          )}
+        </div>
+      </div>
+
+      {/* Workflow Notice */}
+      <div className="flex items-start gap-3 bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-800 rounded-xl px-4 py-3">
+        <Info className="w-5 h-5 text-blue-600 dark:text-blue-400 flex-shrink-0 mt-0.5" />
+        <div className="text-sm text-blue-800 dark:text-blue-300">
+          <p className="font-medium mb-1">How it works</p>
+          <p>
+            Your posts are created as drafts. For each post: review and edit the content, generate or upload an image, then mark as <span className="font-semibold">Ready to Publish</span>. Posts marked ready will auto-publish at their scheduled time.
+          </p>
+        </div>
+      </div>
+
+      {/* Generation Progress */}
+      {generating && progress.length > 0 && (
+        <div className="bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-800 rounded-2xl p-6">
+          <div className="flex items-center gap-3 mb-4">
+            <Loader2 className="w-5 h-5 text-linkedin-blue animate-spin" />
+            <h3 className="font-semibold text-linkedin-blue flex-1">
+              Generating your next {postsPerBatch} posts...
+            </h3>
+            <button
+              onClick={handleCancelGeneration}
+              className="flex items-center gap-1.5 text-sm px-3 py-1.5 border border-red-200 dark:border-red-800 text-red-600 dark:text-red-400 rounded-lg hover:bg-red-50 dark:hover:bg-red-900/30 transition-colors"
+            >
+              <XCircle className="w-4 h-4" />
+              Cancel
+            </button>
+          </div>
+          <div className="space-y-2">
+            {progress.map((msg, i) => (
+              <div key={i} className="flex items-center gap-2 text-sm text-blue-700 dark:text-blue-300">
+                <CheckCircle className="w-4 h-4 text-green-500 flex-shrink-0" />
+                {msg}
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Generation Error with Retry */}
+      {generationError && !generating && (
+        <div className="bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 rounded-2xl p-5">
+          <div className="flex items-start gap-3">
+            <AlertCircle className="w-5 h-5 text-red-600 dark:text-red-400 flex-shrink-0 mt-0.5" />
+            <div className="flex-1">
+              <h3 className="font-semibold text-red-800 dark:text-red-300 text-sm">Generation failed</h3>
+              <p className="text-sm text-red-600 dark:text-red-400 mt-1">{generationError}</p>
+            </div>
+            <button
+              onClick={handleGenerate}
+              className="flex items-center gap-1.5 text-sm px-4 py-2 bg-red-600 hover:bg-red-700 text-white rounded-lg transition-colors font-medium flex-shrink-0"
+            >
+              <RefreshCw className="w-4 h-4" />
+              Retry
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* Stats */}
+      <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+        {statCards.map((stat) => (
+          <div key={stat.label} className="bg-white dark:bg-gray-900 rounded-2xl p-5 border border-gray-100 dark:border-gray-800 shadow-sm">
+            <div className={cn("w-10 h-10 rounded-xl flex items-center justify-center mb-3", stat.bg)}>
+              <stat.icon className={cn("w-5 h-5", stat.color)} />
+            </div>
+            <div className="text-2xl font-bold text-gray-900 dark:text-gray-100">{stat.value}</div>
+            <div className="text-sm text-gray-500 dark:text-gray-400 mt-0.5">{stat.label}</div>
+          </div>
+        ))}
+      </div>
+
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+        {/* Upcoming / Recent Posts */}
+        <div className="bg-white dark:bg-gray-900 rounded-2xl border border-gray-100 dark:border-gray-800 shadow-sm">
+          <div className="flex items-center justify-between p-5 border-b border-gray-100 dark:border-gray-800">
+            <h2 className="font-semibold text-gray-900 dark:text-gray-100 flex items-center gap-2">
+              <Clock className="w-4 h-4 text-gray-400" />
+              {upcomingPosts.length > 0 && upcomingPosts[0].scheduledAt && new Date(upcomingPosts[0].scheduledAt) > new Date()
+                ? "Upcoming Posts"
+                : "Recent Posts"}
+            </h2>
+            <Link href="/posts" className="text-sm text-linkedin-blue hover:underline flex items-center gap-1">
+              View all <ArrowRight className="w-3 h-3" />
+            </Link>
+          </div>
+          <div className="p-2">
+            {upcomingPosts.length === 0 ? (
+              <div className="py-8 text-center text-gray-500 dark:text-gray-400 text-sm">
+                {recentPlan
+                  ? "No upcoming posts. Generate your next batch of content!"
+                  : "Generate your first batch of posts to get started."}
+              </div>
+            ) : (
+              upcomingPosts.map((post) => (
+                <Link
+                  key={post.id}
+                  href={`/posts/${post.id}`}
+                  className="flex items-start gap-3 p-3 rounded-xl hover:bg-gray-50 dark:hover:bg-gray-800 transition-colors"
+                >
+                  <div className="flex-1 min-w-0">
+                    <p className="text-sm font-medium text-gray-900 dark:text-gray-100 truncate">{post.title}</p>
+                    <div className="flex items-center gap-2 mt-1 flex-wrap">
+                      <span className={cn("text-xs px-2 py-0.5 rounded-full border", getPostTypeColor(post.postType))}>
+                        {post.postType}
+                      </span>
+                      {post.scheduledAt && (
+                        <span className="text-xs text-gray-500 dark:text-gray-400">{formatDate(post.scheduledAt)}</span>
+                      )}
+                      {post.postedToLinkedIn && (
+                        <span className="text-xs bg-[#0A66C2]/10 text-[#0A66C2] dark:text-blue-400 px-2 py-0.5 rounded-full">
+                          Posted
+                        </span>
+                      )}
+                    </div>
+                  </div>
+                  <ArrowRight className="w-4 h-4 text-gray-400 flex-shrink-0 mt-1" />
+                </Link>
+              ))
+            )}
+          </div>
+        </div>
+
+        {/* Content Strategy */}
+        <div className="bg-white dark:bg-gray-900 rounded-2xl border border-gray-100 dark:border-gray-800 shadow-sm">
+          <div className="flex items-center justify-between p-5 border-b border-gray-100 dark:border-gray-800">
+            <h2 className="font-semibold text-gray-900 dark:text-gray-100 flex items-center gap-2">
+              <TrendingUp className="w-4 h-4 text-gray-400" />
+              Latest Strategy
+            </h2>
+            {recentPlan && (
+              <span className="text-xs text-gray-400 dark:text-gray-500">
+                Starting{" "}
+                {new Date(recentPlan.weekStart).toLocaleDateString("en-US", {
+                  month: "short",
+                  day: "numeric",
+                })}
+              </span>
+            )}
+          </div>
+          <div className="p-5">
+            {recentPlan ? (
+              <StrategyPillars strategy={recentPlan.strategy} />
+            ) : (
+              <div className="py-8 text-center">
+                <Sparkles className="w-10 h-10 text-gray-300 dark:text-gray-600 mx-auto mb-3" />
+                <p className="text-sm text-gray-500 dark:text-gray-400">
+                  Click &quot;Generate Next {postsPerBatch} Posts&quot; above to create your personalized strategy and content
+                </p>
+              </div>
+            )}
+          </div>
+        </div>
+      </div>
+
+      {/* Quick Actions */}
+      <div className="grid grid-cols-3 gap-4">
+        {[
+          { href: "/calendar", icon: Calendar, label: "Content Calendar", color: "bg-blue-50 dark:bg-blue-900/30 text-blue-700 dark:text-blue-400" },
+          { href: "/newsletter", icon: Mail, label: "Newsletter Planner", color: "bg-purple-50 dark:bg-purple-900/30 text-purple-700 dark:text-purple-400" },
+          { href: "/settings", icon: FileText, label: "Update Profile", color: "bg-green-50 dark:bg-green-900/30 text-green-700 dark:text-green-400" },
+        ].map((a) => (
+          <Link
+            key={a.href}
+            href={a.href}
+            className="flex items-center gap-3 p-4 rounded-2xl border border-gray-100 dark:border-gray-800 shadow-sm bg-white dark:bg-gray-900 hover:shadow-md transition-shadow"
+          >
+            <div className={cn("w-9 h-9 rounded-xl flex items-center justify-center", a.color)}>
+              <a.icon className="w-5 h-5" />
+            </div>
+            <span className="text-sm font-medium text-gray-900 dark:text-gray-100 hidden sm:block">{a.label}</span>
+            <ArrowRight className="w-4 h-4 text-gray-400 ml-auto" />
+          </Link>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function StrategyPillars({ strategy }: { strategy: string }) {
+  try {
+    const parsed = JSON.parse(strategy) as {
+      pillars?: Array<{ name: string; description: string; percentage: number }>;
+      weekTheme?: string;
+      weekFocus?: string;
+      weeklyGoal?: string;
+    };
+    const pillars = parsed.pillars ?? [];
+
+    return (
+      <div className="space-y-3">
+        {parsed.weekTheme && (
+          <div className="bg-blue-50 dark:bg-blue-900/30 px-3 py-2 rounded-lg">
+            <p className="text-xs font-semibold text-[#0A66C2] dark:text-blue-400">{parsed.weekTheme}</p>
+            {parsed.weekFocus && (
+              <p className="text-xs text-blue-600 dark:text-blue-300 mt-0.5">{parsed.weekFocus}</p>
+            )}
+          </div>
+        )}
+        {pillars.map((p, i) => (
+          <div key={i}>
+            <div className="flex items-center justify-between mb-1">
+              <span className="text-sm font-medium text-gray-700 dark:text-gray-300">{p.name}</span>
+              <span className="text-xs text-gray-500 dark:text-gray-400">{p.percentage}%</span>
+            </div>
+            <div className="h-2 bg-gray-100 dark:bg-gray-800 rounded-full overflow-hidden">
+              <div
+                className="h-full linkedin-gradient rounded-full"
+                style={{ width: `${p.percentage}%` }}
+              />
+            </div>
+            <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">{p.description}</p>
+          </div>
+        ))}
+        {parsed.weeklyGoal && (
+          <p className="text-xs text-gray-500 dark:text-gray-400 bg-gray-50 dark:bg-gray-800 px-3 py-2 rounded-lg mt-2">
+            Goal: {parsed.weeklyGoal}
+          </p>
+        )}
+      </div>
+    );
+  } catch {
+    return <p className="text-sm text-gray-500 dark:text-gray-400">Strategy data unavailable.</p>;
+  }
+}
+
+function getTimeOfDay(): string {
+  const h = new Date().getHours();
+  if (h < 12) return "morning";
+  if (h < 17) return "afternoon";
+  return "evening";
+}

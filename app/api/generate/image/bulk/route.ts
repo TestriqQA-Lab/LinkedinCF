@@ -1,0 +1,85 @@
+import { NextRequest, NextResponse } from "next/server";
+import { getServerSession } from "next-auth";
+import { authOptions } from "@/lib/auth";
+import { prisma } from "@/lib/prisma";
+import { generatePostImage, buildImagePrompt } from "@/lib/imagen";
+import { checkActiveSubscription } from "@/lib/subscription-check";
+
+const IMAGE_GEN_LIMIT_PER_POST = 2;
+
+export async function POST(req: NextRequest) {
+  const session = await getServerSession(authOptions);
+  if (!session?.user?.id) {
+    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
+
+  const { allowed, reason } = await checkActiveSubscription(session.user.id);
+  if (!allowed) {
+    return NextResponse.json({ error: reason, subscriptionRequired: true }, { status: 403 });
+  }
+
+  const { postIds } = (await req.json()) as { postIds: string[] };
+
+  if (!Array.isArray(postIds) || postIds.length === 0 || postIds.length > 10) {
+    return NextResponse.json(
+      { error: "Provide 1-10 post IDs" },
+      { status: 400 }
+    );
+  }
+
+  // Fetch posts that belong to the user and don't already have an image and haven't exceeded gen limit
+  const posts = await prisma.post.findMany({
+    where: {
+      id: { in: postIds },
+      plan: { userId: session.user.id },
+      imageUrl: null,
+      imageGenCount: { lt: IMAGE_GEN_LIMIT_PER_POST },
+    },
+    include: { plan: { include: { user: { select: { industry: true } } } } },
+  });
+
+  if (posts.length === 0) {
+    return NextResponse.json({
+      error: "No eligible posts found (already have images or limit reached)",
+      generated: 0,
+    });
+  }
+
+  let generated = 0;
+  const errors: string[] = [];
+
+  // Generate sequentially to avoid overloading the image API
+  for (const post of posts) {
+    try {
+      const imagePrompt =
+        post.imagePrompt ||
+        buildImagePrompt(post.title, post.postType, post.plan.user.industry || "business");
+
+      const imageUrl = await generatePostImage(
+        imagePrompt,
+        post.id,
+        post.plan.user.industry || "business"
+      );
+
+      if (imageUrl) {
+        await prisma.post.update({
+          where: { id: post.id },
+          data: {
+            imageUrl,
+            imagePrompt,
+            imageGenCount: post.imageGenCount + 1,
+          },
+        });
+        generated++;
+      }
+    } catch (err) {
+      errors.push(post.id);
+    }
+  }
+
+  return NextResponse.json({
+    generated,
+    total: posts.length,
+    errors: errors.length > 0 ? `Failed for ${errors.length} post(s)` : undefined,
+  });
+}

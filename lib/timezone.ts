@@ -1,0 +1,182 @@
+import { fromZonedTime, formatInTimeZone } from "date-fns-tz";
+
+const DEFAULT_TZ = "Asia/Kolkata";
+
+/**
+ * Convert a user's local date + time (e.g. "2026-03-15", "09:00") in their
+ * timezone to a proper UTC Date object.
+ *
+ * Example: localTimeToUTC("2026-03-15", "09:00", "Asia/Kolkata")
+ *   --> Date representing 09:00 IST = 03:30 UTC
+ */
+export function localTimeToUTC(
+  dateStr: string,
+  timeStr: string,
+  timezone: string = DEFAULT_TZ
+): Date {
+  // Construct a Date as if it were in the user's timezone
+  const localDatetime = new Date(`${dateStr}T${timeStr}:00`);
+  // fromZonedTime interprets localDatetime as being in `timezone`
+  // and returns the equivalent UTC Date
+  return fromZonedTime(localDatetime, timezone);
+}
+
+/**
+ * Format a UTC Date for display in a specific timezone.
+ * Returns formatted string like "Mar 15, 2026 09:00 AM".
+ */
+export function utcToLocalTime(
+  utcDate: Date | string,
+  timezone: string = DEFAULT_TZ,
+  formatStr: string = "MMM d, yyyy hh:mm a"
+): string {
+  return formatInTimeZone(new Date(utcDate), timezone, formatStr);
+}
+
+/**
+ * Given a user's posting schedule and timezone, compute posting slots
+ * for a given week as proper UTC Dates.
+ *
+ * @param weekStart - The Monday of the target week
+ * @param days - Array of day names, e.g. ["Monday", "Wednesday", "Friday"]
+ * @param time - Time string "HH:MM" in user's local timezone
+ * @param timezone - IANA timezone string
+ * @returns Array of UTC Dates for each posting slot
+ */
+/**
+ * Compute posting slots for the next N weekdays (Mon-Fri) starting from a given date.
+ * Skips Saturday and Sunday.
+ *
+ * @param startDate - The date to start from (typically today)
+ * @param count - Number of weekday slots to generate (e.g. 5)
+ * @param time - Time string "HH:MM" in user's local timezone
+ * @param timezone - IANA timezone string
+ * @returns Array of UTC Dates for each posting slot
+ */
+export function getNextWeekdaySlots(
+  startDate: Date,
+  count: number,
+  time: string,
+  timezone: string = DEFAULT_TZ
+): Date[] {
+  const slots: Date[] = [];
+  const current = new Date(startDate);
+  current.setHours(0, 0, 0, 0);
+
+  while (slots.length < count) {
+    const dayOfWeek = current.getDay(); // 0=Sun, 6=Sat
+    if (dayOfWeek !== 0 && dayOfWeek !== 6) {
+      // Weekday — create a slot
+      const year = current.getFullYear();
+      const month = String(current.getMonth() + 1).padStart(2, "0");
+      const day = String(current.getDate()).padStart(2, "0");
+      const dateStr = `${year}-${month}-${day}`;
+      slots.push(localTimeToUTC(dateStr, time, timezone));
+    }
+    current.setDate(current.getDate() + 1);
+  }
+
+  return slots;
+}
+
+const DAY_NAME_TO_JS_DAY: Record<string, number> = {
+  Sunday: 0,
+  Monday: 1,
+  Tuesday: 2,
+  Wednesday: 3,
+  Thursday: 4,
+  Friday: 5,
+  Saturday: 6,
+};
+
+/**
+ * Compute the next batch of posting slots starting from `startDate`, only on
+ * the days the user has chosen in their posting schedule.
+ *
+ * Example: startDate = Mar 16 (Mon), days = ["Monday", "Wednesday", "Friday"]
+ *   --> Returns slots for Mar 16 (Mon), Mar 18 (Wed), Mar 20 (Fri)
+ *
+ * If startDate falls mid-week (e.g. Wednesday), only Wed and Fri slots
+ * are returned for that first week, then Mon/Wed/Fri of the next week, etc.
+ *
+ * @param startDate - The date to start scanning from
+ * @param days - Array of day names from the user's posting schedule
+ * @param time - Time string "HH:MM" in user's local timezone
+ * @param timezone - IANA timezone string
+ * @param maxSlots - Maximum number of slots to return (defaults to days.length)
+ * @returns Array of UTC Dates for each posting slot
+ */
+export function getNextScheduledSlots(
+  startDate: Date,
+  days: string[],
+  time: string,
+  timezone: string = DEFAULT_TZ,
+  maxSlots?: number,
+): Date[] {
+  const targetDays = new Set(days.map((d) => DAY_NAME_TO_JS_DAY[d]).filter((d) => d !== undefined));
+  if (targetDays.size === 0) {
+    // Fallback: if no valid days, use all weekdays
+    return getNextWeekdaySlots(startDate, maxSlots ?? 5, time, timezone);
+  }
+
+  const limit = maxSlots ?? targetDays.size; // default: one post per selected day
+  const slots: Date[] = [];
+  const current = new Date(startDate);
+  current.setHours(0, 0, 0, 0);
+
+  // Safety: scan at most 60 days ahead to avoid infinite loop
+  const maxDays = 60;
+  let scanned = 0;
+
+  while (slots.length < limit && scanned < maxDays) {
+    if (targetDays.has(current.getDay())) {
+      const year = current.getFullYear();
+      const month = String(current.getMonth() + 1).padStart(2, "0");
+      const day = String(current.getDate()).padStart(2, "0");
+      const dateStr = `${year}-${month}-${day}`;
+      slots.push(localTimeToUTC(dateStr, time, timezone));
+    }
+    current.setDate(current.getDate() + 1);
+    scanned++;
+  }
+
+  return slots;
+}
+
+export function getPostingSlots(
+  weekStart: Date,
+  days: string[],
+  time: string,
+  timezone: string = DEFAULT_TZ
+): Date[] {
+  const dayNameToOffset: Record<string, number> = {
+    Monday: 0,
+    Tuesday: 1,
+    Wednesday: 2,
+    Thursday: 3,
+    Friday: 4,
+    Saturday: 5,
+    Sunday: 6,
+  };
+
+  const slots: Date[] = [];
+
+  for (const dayName of days) {
+    const offset = dayNameToOffset[dayName];
+    if (offset === undefined) continue;
+
+    // Calculate the date for this day of the week
+    const slotDate = new Date(weekStart);
+    slotDate.setDate(weekStart.getDate() + offset);
+    // Extract YYYY-MM-DD for the local date
+    const year = slotDate.getFullYear();
+    const month = String(slotDate.getMonth() + 1).padStart(2, "0");
+    const day = String(slotDate.getDate()).padStart(2, "0");
+    const dateStr = `${year}-${month}-${day}`;
+
+    // Convert the user's local time on that date to UTC
+    slots.push(localTimeToUTC(dateStr, time, timezone));
+  }
+
+  return slots.sort((a, b) => a.getTime() - b.getTime());
+}
