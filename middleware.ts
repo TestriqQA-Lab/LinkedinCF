@@ -1,7 +1,12 @@
 import { withAuth } from "next-auth/middleware";
-import { NextResponse } from "next/server";
+import { NextRequest, NextResponse } from "next/server";
+import { checkSiteGate } from "@/lib/site-gate";
 
-export default withAuth(
+// ── Site-wide password gate ────────────────────────────────────────────────────
+// Set SITE_PASSWORD env var to enable. Remove it to disable.
+// API routes, cron jobs, webhooks, and static assets bypass the gate.
+
+const authMiddleware = withAuth(
   async function middleware(req) {
     const { pathname } = req.nextUrl;
     const token = req.nextauth.token;
@@ -13,8 +18,6 @@ export default withAuth(
     }
 
     // Always allow API auth, webhook, subscription, and profile routes
-    // Profile routes must be reachable in all states since they have their own auth checks
-    // Subscription routes must be reachable to complete checkout even when trial expired
     if (
       pathname.startsWith("/api/auth") ||
       pathname.startsWith("/api/webhooks") ||
@@ -25,7 +28,7 @@ export default withAuth(
       return NextResponse.next();
     }
 
-    // Admin routes: require admin role, bypass onboarding/subscription gates
+    // Admin routes: require admin role
     if (pathname.startsWith("/admin") || pathname.startsWith("/api/admin")) {
       if (!token || token.role !== "admin") {
         return NextResponse.redirect(new URL("/dashboard", req.url));
@@ -35,15 +38,10 @@ export default withAuth(
 
     // For all dashboard routes, enforce onboarding and subscription gates
     if (token) {
-      // Gate 1: Onboarding must be completed
       if (!token.onboardingCompleted) {
         return NextResponse.redirect(new URL("/onboarding", req.url));
       }
-
-      // Gate 2: Subscription must be active or trialing (even if expired trial — read-only access)
-      // Only hard-redirect for canceled, unpaid, or no subscription
       const status = token.subscriptionStatus as string | undefined;
-
       if (!status || (status !== "active" && status !== "trialing" && status !== "cancel_pending")) {
         return NextResponse.redirect(new URL("/subscribe", req.url));
       }
@@ -58,22 +56,20 @@ export default withAuth(
   }
 );
 
+// ── Main middleware: gate check → auth check ─────────────────────────────────
+export default function middleware(req: NextRequest) {
+  // Check site-wide password gate first
+  const gateResponse = checkSiteGate(req);
+  if (gateResponse) return gateResponse;
+
+  // Then run the auth middleware
+  return (authMiddleware as any)(req);
+}
+
 export const config = {
   matcher: [
-    "/admin/:path*",
-    "/api/admin/:path*",
-    "/dashboard/:path*",
-    "/calendar/:path*",
-    "/posts/:path*",
-    "/settings/:path*",
-    "/newsletter/:path*",
-    "/api/generate/:path*",
-    "/api/content/:path*",
-    "/api/profile/:path*",
-    "/api/subscription/:path*",
-    "/api/post-to-linkedin/:path*",
-    "/api/newsletter/:path*",
-    // Note: /api/onboarding is intentionally excluded — it must be reachable
-    // before onboarding is complete, and it has its own session auth check.
+    // Site gate catches everything via checkSiteGate's own path filtering
+    "/((?!_next/static|_next/image|favicon.ico).*)",
   ],
 };
+
