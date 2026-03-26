@@ -14,7 +14,7 @@ function isPublicRoute(pathname: string): boolean {
   }
 
   // Public pages
-  const publicPaths = ["/", "/login", "/subscribe", "/onboarding", "/site-gate"];
+  const publicPaths = ["/", "/login", "/subscribe", "/onboarding", "/site-gate", "/blog"];
   if (publicPaths.some((p) => pathname === p || pathname.startsWith(p + "/"))) {
     return true;
   }
