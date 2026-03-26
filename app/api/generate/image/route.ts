@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { getServerSession } from "next-auth";
 import { authOptions } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
-import { generatePostImage, buildImagePrompt } from "@/lib/imagen";
+import { generatePostImage, buildImagePrompt, lastImageGenError } from "@/lib/imagen";
 import { checkActiveSubscription } from "@/lib/subscription-check";
 import { checkRateLimit, RATE_LIMITS } from "@/lib/rate-limit";
 
@@ -75,11 +75,12 @@ export async function POST(req: NextRequest) {
     });
   }
 
-  const remaining = IMAGE_GEN_LIMIT_PER_POST - (post.imageGenCount + 1);
+  const remaining = IMAGE_GEN_LIMIT_PER_POST - (post.imageGenCount + (imageUrl ? 1 : 0));
 
   return NextResponse.json({
     imageUrl,
     remaining,
     limit: IMAGE_GEN_LIMIT_PER_POST,
+    ...(imageUrl ? {} : { error: lastImageGenError || "Image generation failed — all models returned no image" }),
   });
 }

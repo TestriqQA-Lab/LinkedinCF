@@ -1,7 +1,16 @@
 import { GoogleGenAI } from "@google/genai";
 import { put } from "@vercel/blob";
 
-const ai = new GoogleGenAI({ apiKey: process.env.GOOGLE_AI_API_KEY! });
+let _ai: GoogleGenAI | null = null;
+function getAI(): GoogleGenAI {
+  if (!_ai) {
+    _ai = new GoogleGenAI({ apiKey: process.env.GOOGLE_AI_API_KEY! });
+  }
+  return _ai;
+}
+
+// Track last generation error for better debugging
+export let lastImageGenError: string | null = null;
 
 // ─── Image Generation ────────────────────────────────────────────────────────
 
@@ -10,6 +19,8 @@ export async function generatePostImage(
   postId: string,
   industry?: string
 ): Promise<string | null> {
+  lastImageGenError = null;
+
   // ONLY use the imagePrompt (scene/metaphor description) — never pass post
   // title or body text, as image models will attempt to render any text they see.
   const sceneDescription = imagePrompt || "Professional abstract business concept";
@@ -25,7 +36,7 @@ Square format (1:1). High quality, suitable for LinkedIn.`;
 
   // Try imagen-4.0-fast-generate-001 ($0.02/image — cheapest option)
   try {
-    const response = await ai.models.generateImages({
+    const response = await getAI().models.generateImages({
       model: "imagen-4.0-fast-generate-001",
       prompt,
       config: {
@@ -47,12 +58,13 @@ Square format (1:1). High quality, suitable for LinkedIn.`;
     }
     console.warn("[Imagen] Imagen 4.0 Fast returned no image bytes, trying fallback");
   } catch (err) {
+    lastImageGenError = `Imagen 4.0 Fast: ${(err as Error).message}`;
     console.error("[Imagen] Imagen 4.0 Fast failed:", (err as Error).message);
   }
 
   // Fallback: imagen-3.0-generate-002
   try {
-    const response = await ai.models.generateImages({
+    const response = await getAI().models.generateImages({
       model: "imagen-3.0-generate-002",
       prompt,
       config: {
@@ -74,12 +86,13 @@ Square format (1:1). High quality, suitable for LinkedIn.`;
     }
     console.warn("[Imagen] Imagen 3.0 returned no image bytes");
   } catch (err) {
+    lastImageGenError = `Imagen 3.0: ${(err as Error).message}`;
     console.error("[Imagen] Imagen 3.0 failed:", (err as Error).message);
   }
 
   // Fallback: gemini-2.0-flash-preview-image-generation via generateContent
   try {
-    const response = await ai.models.generateContent({
+    const response = await getAI().models.generateContent({
       model: "gemini-2.0-flash-preview-image-generation",
       contents: prompt,
       config: { responseModalities: ["IMAGE"] },
@@ -102,6 +115,7 @@ Square format (1:1). High quality, suitable for LinkedIn.`;
     }
     console.warn("[Imagen] Gemini Flash Image Gen returned no image data");
   } catch (err) {
+    lastImageGenError = `All methods failed. Last: ${(err as Error).message}`;
     console.error("[Imagen] All image generation methods failed:", (err as Error).message);
   }
 
