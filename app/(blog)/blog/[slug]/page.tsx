@@ -179,7 +179,7 @@ export default function BlogPostPage({ params }: Props) {
       </header>
 
       {/* Breadcrumb */}
-      <nav className="max-w-6xl mx-auto px-6 pt-6">
+      <nav className="px-6 pt-6">
         <div className="flex items-center gap-1 text-sm text-gray-500 dark:text-gray-400">
           <Link href="/" className="hover:text-[#0A66C2] transition-colors">
             Home
