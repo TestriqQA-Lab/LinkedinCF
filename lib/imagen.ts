@@ -34,13 +34,12 @@ Square format (1:1). High quality, suitable for LinkedIn.`;
 
   console.log(`[Imagen] Scene: ${sceneDescription.slice(0, 80)}...`);
 
-  // Available image generation models (queried from /v1beta/models):
-  // - gemini-3.1-flash-image-preview: supports generateContent with IMAGE modality
+  // Available image generation models (confirmed working via API test):
+  // - gemini-3.1-flash-image-preview: confirmed working, returns JPEG images via generateContent
   // - Imagen 4.0 models: only support "predict" (Vertex AI), NOT generateImages via Gemini API
 
   const imageModels = [
     "gemini-3.1-flash-image-preview",
-    "gemini-2.0-flash-exp",
   ];
 
   for (const model of imageModels) {
