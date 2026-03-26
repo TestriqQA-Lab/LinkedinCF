@@ -34,92 +34,49 @@ Square format (1:1). High quality, suitable for LinkedIn.`;
 
   console.log(`[Imagen] Scene: ${sceneDescription.slice(0, 80)}...`);
 
-  // Method 1: Gemini native image generation (most reliable)
-  try {
-    const response = await getAI().models.generateContent({
-      model: "gemini-2.0-flash-exp",
-      contents: prompt,
-      config: { responseModalities: ["IMAGE", "TEXT"] },
-    });
+  // Available image generation models (queried from /v1beta/models):
+  // - gemini-3.1-flash-image-preview: supports generateContent with IMAGE modality
+  // - Imagen 4.0 models: only support "predict" (Vertex AI), NOT generateImages via Gemini API
 
-    const parts = response.candidates?.[0]?.content?.parts ?? [];
-    for (const part of parts) {
-      if (part.inlineData?.mimeType?.startsWith("image/") && part.inlineData.data) {
-        const buffer = Buffer.from(part.inlineData.data, "base64");
-        const ext = part.inlineData.mimeType === "image/jpeg" ? "jpg" : "png";
-        const contentType = part.inlineData.mimeType === "image/jpeg" ? "image/jpeg" : "image/png";
-        const filename = `post-${postId}-${Date.now()}.${ext}`;
-        const blob = await put(`generated/${filename}`, buffer, {
-          access: "public",
-          contentType,
-        });
-        console.log("[Imagen] Generated via Gemini 2.0 Flash Exp:", blob.url);
-        return blob.url;
-      }
-    }
-    console.warn("[Imagen] Gemini 2.0 Flash Exp returned no image data, trying fallback");
-  } catch (err) {
-    lastImageGenError = `Gemini Flash Exp: ${(err as Error).message}`;
-    console.error("[Imagen] Gemini 2.0 Flash Exp failed:", (err as Error).message);
-  }
+  const imageModels = [
+    "gemini-3.1-flash-image-preview",
+    "gemini-2.0-flash-exp",
+  ];
 
-  // Method 2: Imagen 3.0 (stable)
-  try {
-    const response = await getAI().models.generateImages({
-      model: "imagen-3.0-generate-001",
-      prompt,
-      config: {
-        numberOfImages: 1,
-        aspectRatio: "1:1",
-      },
-    });
-
-    const imageBytes = response.generatedImages?.[0]?.image?.imageBytes;
-    if (imageBytes) {
-      const buffer = Buffer.from(imageBytes, "base64");
-      const filename = `post-${postId}-${Date.now()}.png`;
-      const blob = await put(`generated/${filename}`, buffer, {
-        access: "public",
-        contentType: "image/png",
+  for (const model of imageModels) {
+    try {
+      console.log(`[Imagen] Trying ${model}...`);
+      const response = await getAI().models.generateContent({
+        model,
+        contents: prompt,
+        config: { responseModalities: ["IMAGE", "TEXT"] },
       });
-      console.log("[Imagen] Generated via Imagen 3.0:", blob.url);
-      return blob.url;
-    }
-    console.warn("[Imagen] Imagen 3.0 returned no image bytes, trying fallback");
-  } catch (err) {
-    lastImageGenError = `Imagen 3.0: ${(err as Error).message}`;
-    console.error("[Imagen] Imagen 3.0 failed:", (err as Error).message);
-  }
 
-  // Method 3: Gemini 2.5 Flash native image gen
-  try {
-    const response = await getAI().models.generateContent({
-      model: "gemini-2.5-flash-preview-image-generation",
-      contents: prompt,
-      config: { responseModalities: ["IMAGE", "TEXT"] },
-    });
-
-    const parts = response.candidates?.[0]?.content?.parts ?? [];
-    for (const part of parts) {
-      if (part.inlineData?.mimeType?.startsWith("image/") && part.inlineData.data) {
-        const buffer = Buffer.from(part.inlineData.data, "base64");
-        const ext = part.inlineData.mimeType === "image/jpeg" ? "jpg" : "png";
-        const contentType = part.inlineData.mimeType === "image/jpeg" ? "image/jpeg" : "image/png";
-        const filename = `post-${postId}-${Date.now()}.${ext}`;
-        const blob = await put(`generated/${filename}`, buffer, {
-          access: "public",
-          contentType,
-        });
-        console.log("[Imagen] Generated via Gemini 2.5 Flash:", blob.url);
-        return blob.url;
+      const parts = response.candidates?.[0]?.content?.parts ?? [];
+      for (const part of parts) {
+        if (part.inlineData?.mimeType?.startsWith("image/") && part.inlineData.data) {
+          const buffer = Buffer.from(part.inlineData.data, "base64");
+          const ext = part.inlineData.mimeType === "image/jpeg" ? "jpg" : "png";
+          const contentType = part.inlineData.mimeType === "image/jpeg" ? "image/jpeg" : "image/png";
+          const filename = `post-${postId}-${Date.now()}.${ext}`;
+          const blob = await put(`generated/${filename}`, buffer, {
+            access: "public",
+            contentType,
+          });
+          console.log(`[Imagen] Generated via ${model}:`, blob.url);
+          return blob.url;
+        }
       }
+      console.warn(`[Imagen] ${model} returned no image data, trying next model`);
+    } catch (err) {
+      lastImageGenError = `${model}: ${(err as Error).message}`;
+      console.error(`[Imagen] ${model} failed:`, (err as Error).message);
     }
-    console.warn("[Imagen] Gemini 2.5 Flash returned no image data");
-  } catch (err) {
-    lastImageGenError = `All methods failed. Last: ${(err as Error).message}`;
-    console.error("[Imagen] All image generation methods failed:", (err as Error).message);
   }
 
+  if (!lastImageGenError) {
+    lastImageGenError = "All image generation models returned no image data";
+  }
   return null;
 }
 
