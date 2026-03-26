@@ -1,5 +1,6 @@
 import { Metadata } from "next";
 import Link from "next/link";
+import Image from "next/image";
 import { blogPosts } from "@/lib/blog-data";
 import { ArrowLeft, Clock, Tag } from "lucide-react";
 
@@ -25,12 +26,8 @@ export default function BlogListPage() {
       {/* Header */}
       <header className="border-b border-gray-200 dark:border-gray-800">
         <div className="max-w-6xl mx-auto px-6 py-4 flex items-center justify-between">
-          <Link
-            href="/"
-            className="flex items-center gap-2 text-gray-600 dark:text-gray-400 hover:text-[#0A66C2] transition-colors"
-          >
-            <ArrowLeft className="w-4 h-4" />
-            <span className="font-semibold text-lg text-gray-900 dark:text-white">Kruti.io</span>
+          <Link href="/" className="flex items-center gap-2 hover:opacity-80 transition-opacity">
+            <Image src="/logo.png" alt="Kruti.io" width={120} height={36} className="h-9 w-auto" />
           </Link>
           <Link
             href="/login"

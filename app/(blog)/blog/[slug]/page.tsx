@@ -1,5 +1,6 @@
 import { Metadata } from "next";
 import Link from "next/link";
+import Image from "next/image";
 import { notFound } from "next/navigation";
 import { blogPosts, getBlogPost } from "@/lib/blog-data";
 import { ArrowLeft, Clock, Tag, Calendar, User, ChevronRight } from "lucide-react";
@@ -157,11 +158,8 @@ export default function BlogPostPage({ params }: Props) {
       {/* Header */}
       <header className="border-b border-gray-200 dark:border-gray-800">
         <div className="max-w-6xl mx-auto px-6 py-4 flex items-center justify-between">
-          <Link
-            href="/"
-            className="font-semibold text-lg text-gray-900 dark:text-white hover:text-[#0A66C2] transition-colors"
-          >
-            Kruti.io
+          <Link href="/" className="hover:opacity-80 transition-opacity">
+            <Image src="/logo.png" alt="Kruti.io" width={120} height={36} className="h-9 w-auto" />
           </Link>
           <div className="flex items-center gap-4">
             <Link
@@ -181,7 +179,7 @@ export default function BlogPostPage({ params }: Props) {
       </header>
 
       {/* Breadcrumb */}
-      <nav className="max-w-3xl mx-auto px-6 pt-6">
+      <nav className="max-w-6xl mx-auto px-6 pt-6">
         <div className="flex items-center gap-1 text-sm text-gray-500 dark:text-gray-400">
           <Link href="/" className="hover:text-[#0A66C2] transition-colors">
             Home
@@ -191,7 +189,7 @@ export default function BlogPostPage({ params }: Props) {
             Blog
           </Link>
           <ChevronRight className="w-3 h-3" />
-          <span className="text-gray-900 dark:text-white truncate max-w-[200px]">{post.title}</span>
+          <span className="text-gray-900 dark:text-white truncate max-w-[300px]">{post.title}</span>
         </div>
       </nav>
 
