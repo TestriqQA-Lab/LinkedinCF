@@ -2,11 +2,11 @@
   "crons": [
     {
       "path": "/api/cron/auto-post",
-      "schedule": "* * * * *"
+      "schedule": "*/5 * * * *"
     },
     {
       "path": "/api/cron/newsletter",
-      "schedule": "* * * * *"
+      "schedule": "*/15 * * * *"
     },
     {
       "path": "/api/cron/trial-reminders",
