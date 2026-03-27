@@ -1,10 +1,5 @@
 import { withAuth } from "next-auth/middleware";
 import { NextRequest, NextResponse } from "next/server";
-import { checkSiteGate } from "@/lib/site-gate";
-
-// ── Site-wide password gate ────────────────────────────────────────────────────
-// Set SITE_PASSWORD env var to enable. Remove it to disable.
-// API routes, cron jobs, webhooks, and static assets bypass the gate.
 
 // Routes that NEVER need the auth middleware (public pages, APIs with own auth)
 function isPublicRoute(pathname: string): boolean {
@@ -14,7 +9,7 @@ function isPublicRoute(pathname: string): boolean {
   }
 
   // Public pages
-  const publicPaths = ["/", "/login", "/subscribe", "/onboarding", "/site-gate", "/blog"];
+  const publicPaths = ["/", "/login", "/subscribe", "/onboarding", "/blog"];
   if (publicPaths.some((p) => pathname === p || pathname.startsWith(p + "/"))) {
     return true;
   }
@@ -73,13 +68,9 @@ const authMiddleware = withAuth(
   }
 );
 
-// ── Main middleware: gate check → auth check (only for protected routes) ──────
+// ── Main middleware: auth check (only for protected routes) ──────
 export default function middleware(req: NextRequest) {
   const { pathname } = req.nextUrl;
-
-  // 1. Check site-wide password gate first (all routes except /site-gate itself)
-  const gateResponse = checkSiteGate(req);
-  if (gateResponse) return gateResponse;
 
   // 2. Public routes: skip auth middleware entirely
   if (isPublicRoute(pathname)) {
