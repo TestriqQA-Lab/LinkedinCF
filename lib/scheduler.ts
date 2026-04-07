@@ -5,20 +5,26 @@ import { sendNewsletterEmail, sendTrialReminderEmail, type NewsletterContent } f
 import { cleanupOldImages } from "@/lib/image-cleanup";
 
 // ─── Auto-Post Job ──────────────────────────────────────────────────────────
-// Finds posts with status "ready" scheduled within the next 60 seconds and
-// publishes them to LinkedIn. Called every minute by Vercel Cron.
-export async function runAutoPost(): Promise<{ posted: number; failed: number }> {
+// Finds posts with status "ready" that are due (past-due or within the next
+// 5 minutes) and publishes them to LinkedIn. Called every 5 min by Vercel Cron.
+// Posts older than 72 hours past their scheduled time are skipped as stale.
+export async function runAutoPost(): Promise<{ posted: number; failed: number; skippedStale: number }> {
   let posted = 0;
   let failed = 0;
+  let skippedStale = 0;
 
   const now = new Date();
-  const windowEnd = new Date(now.getTime() + 60 * 1000);
+  const windowEnd = new Date(now.getTime() + 5 * 60 * 1000); // 5 min ahead (matches cron interval)
+  const staleThreshold = new Date(now.getTime() - 72 * 60 * 60 * 1000); // 72 hours ago
 
   const duePosts = await prisma.post.findMany({
     where: {
       status: "ready",
       postedToLinkedIn: false,
-      scheduledAt: { gte: now, lt: windowEnd },
+      scheduledAt: {
+        gte: staleThreshold, // Skip posts older than 72 hours
+        lte: windowEnd,      // Include past-due posts + next 5 min
+      },
       plan: {
         user: {
           subscription: {
@@ -32,6 +38,19 @@ export async function runAutoPost(): Promise<{ posted: number; failed: number }>
 
   if (duePosts.length > 0) {
     console.log(`[Cron:auto-post] Found ${duePosts.length} post(s) due for publishing`);
+  }
+
+  // Also log stale posts that are being permanently skipped
+  const stalePosts = await prisma.post.count({
+    where: {
+      status: "ready",
+      postedToLinkedIn: false,
+      scheduledAt: { lt: staleThreshold },
+    },
+  });
+  if (stalePosts > 0) {
+    skippedStale = stalePosts;
+    console.warn(`[Cron:auto-post] ⚠️ ${stalePosts} post(s) skipped — scheduled more than 72 hours ago`);
   }
 
   for (const post of duePosts) {
@@ -62,7 +81,7 @@ export async function runAutoPost(): Promise<{ posted: number; failed: number }>
     }
   }
 
-  return { posted, failed };
+  return { posted, failed, skippedStale };
 }
 
 // ─── Newsletter Send Job ─────────────────────────────────────────────────────
