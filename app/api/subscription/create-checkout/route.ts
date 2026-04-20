@@ -3,10 +3,11 @@ import { getServerSession } from "next-auth";
 import { authOptions } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
 
-// PAYMENT BYPASS: Force dev mode until Razorpay is enabled
-// To re-enable payments later, replace `true` with the original condition:
-// !process.env.NEXT_PUBLIC_RAZORPAY_KEY_ID || !process.env.RAZORPAY_KEY_SECRET || process.env.NEXT_PUBLIC_RAZORPAY_KEY_ID === "rzp_test_REPLACE_ME"
-const DEV_MODE = true;
+// Auto-detect dev mode: bypasses payment only when Razorpay keys are missing
+const DEV_MODE =
+  !process.env.NEXT_PUBLIC_RAZORPAY_KEY_ID ||
+  !process.env.RAZORPAY_KEY_SECRET ||
+  process.env.NEXT_PUBLIC_RAZORPAY_KEY_ID === "rzp_test_REPLACE_ME";
 
 export async function POST(req: NextRequest) {
   const session = await getServerSession(authOptions);
